@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.venv/
+venv/
+.bridge/spool.jsonl
+.bridge/state.json
+.bridge/claims.json
+AFK_RECEIPT.md
+.DS_Store
