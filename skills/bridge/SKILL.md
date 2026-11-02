@@ -5,7 +5,7 @@ description: Connect AI coding agents to Bridge (https://bridge.xray.tech) via t
 
 # Bridge Agent Skill (`bridge` / `brg` & `bridge-mcp`)
 
-Use this skill whenever operating in a repository bound to **Bridge** (`.bridge.json`, `.workspace-project.json`, or `.xray-dispatch.json`) or when `BRIDGE_API_KEY` / `WORKSPACE_API_KEY` is configured.
+Use this skill whenever operating in a repository bound to **Bridge** (`.bridge.json`) or when `BRIDGE_API_KEY` is configured.
 
 ---
 

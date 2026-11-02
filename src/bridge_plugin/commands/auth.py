@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import stat
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from ..client import BridgeClient
 from ..config import (
     BridgeConfig,
     clear_user_credentials,
+    decode_api_key_claims,
     get_branch_state,
     load_local_claims,
     save_user_credentials,
@@ -35,6 +37,7 @@ from ..runtime import (
 def handle_auth_login(
     args: Any,
     config: BridgeConfig,
+    client: BridgeClient,
     *,
     force_json: bool = False,
     stdin_stream: Any = None,
@@ -62,9 +65,50 @@ def handle_auth_login(
         )
         return EXIT_AUTH_MISSING
 
+    if not api_key.startswith("xrkey_v1."):
+        emit_output(
+            {
+                "ok": False,
+                "error": "INVALID_API_KEY",
+                "message": "That is not a Bridge API key. Keys start with xrkey_v1. Create one in Settings.",
+            },
+            "Error: That is not a Bridge API key. Keys start with xrkey_v1. Create one in Settings.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_AUTH_MISSING
+
     api_url = (getattr(args, "url", None) or config.api_url or DEFAULT_API_URL).strip()
-    org_id = getattr(args, "org", None) or config.organization_id
+    org_id = (
+        getattr(args, "org", None)
+        or decode_api_key_claims(api_key).get("organizationId")
+        or config.organization_id
+    )
     user_email = getattr(args, "email", None) or config.user_email
+
+    # A key Bridge rejects is never saved. Being offline is not a rejection, so that case still saves.
+    verify_client = BridgeClient(
+        replace(config, api_key=api_key, api_url=api_url, organization_id=org_id),
+        agent_id=client.agent_id,
+        timeout=client.timeout,
+        transport=client._transport,
+        env=client._env,
+    )
+    check = verify_client.request("GET", "/api/v1/fleet/api-keys", require_auth=False)
+    if check.status_code in (401, 403):
+        emit_output(
+            {
+                "ok": False,
+                "authenticated": False,
+                "error": "INVALID_API_KEY",
+                "message": "Bridge rejected this API key. It was not saved.",
+                "serverError": check.error,
+            },
+            "Error: Bridge rejected this API key. It was not saved.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_AUTH_MISSING
 
     cred_path = config.credentials_path or save_user_credentials(
         api_key=api_key,
@@ -84,6 +128,7 @@ def handle_auth_login(
     payload = {
         "ok": True,
         "authenticated": True,
+        "verified": check.ok,
         "keyHint": key_hint,
         "organizationId": org_id,
         "apiUrl": api_url,
@@ -94,8 +139,13 @@ def handle_auth_login(
         [
             f"Authenticated with Bridge ({api_url})",
             f"  Key Hint        : {key_hint}",
-            f"  Organization ID : {org_id or '(resolved from key)'}",
+            f"  Organization ID : {org_id or '(unknown)'}",
             f"  Saved To        : {cred_path}",
+            *(
+                []
+                if check.ok
+                else ["  Warning         : Could not reach Bridge to check this key. Run 'bridge auth whoami --verify'."]
+            ),
         ],
         force_json=force_json,
         stdout_stream=stdout_stream,
@@ -128,16 +178,43 @@ def handle_auth_whoami(
         return EXIT_AUTH_MISSING
 
     verify_data: dict[str, Any] = {}
+    verified: bool | None = None
     if getattr(args, "verify", False):
         resp = client.request("GET", "/api/v1/fleet/api-keys", require_auth=False)
-        verify_data = resp.data
+        verified = resp.ok
+        verify_data = resp.data if resp.ok else {}
+        if not resp.ok:
+            rejected = resp.status_code in (401, 403)
+            message = (
+                "Bridge rejected this API key. Create a new one in Settings, then run 'bridge auth login'."
+                if rejected
+                else "Could not reach Bridge to check this API key."
+            )
+            emit_output(
+                {
+                    "ok": False,
+                    "authenticated": False if rejected else config.is_authenticated,
+                    "verified": False,
+                    "error": "INVALID_API_KEY" if rejected else (resp.error or "VERIFY_FAILED"),
+                    "message": message,
+                    "keyHint": config.key_hint,
+                    "apiUrl": config.api_url,
+                },
+                f"Error: {message}",
+                force_json=force_json,
+                stdout_stream=stdout_stream,
+            )
+            return EXIT_AUTH_MISSING if rejected else EXIT_ERROR
 
     payload = {
         "ok": True,
         "authenticated": config.is_authenticated,
+        "verified": verified,
         "authSource": config.auth_source,
         "keyHint": config.key_hint,
-        "organizationId": verify_data.get("organizationId") or config.organization_id,
+        "organizationId": verify_data.get("organizationId")
+        or config.organization_id
+        or decode_api_key_claims(config.api_key).get("organizationId"),
         "apiUrl": config.api_url,
         "repository": config.repository,
         "userEmail": config.user_email,
@@ -186,6 +263,19 @@ def handle_auth_logout(
     return EXIT_OK
 
 
+def _ignore_local_state(root: Path) -> bool:
+    """Keeps Bridge's per-machine state out of commits. Returns whether .gitignore changed."""
+    gitignore = root / ".gitignore"
+    if not gitignore.exists() and not (root / ".git").exists():
+        return False
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if any(line.strip().strip("/") == ".bridge" for line in existing.splitlines()):
+        return False
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    gitignore.write_text(f"{existing}{separator}.bridge/\n", encoding="utf-8")
+    return True
+
+
 def handle_init(
     args: Any,
     config: BridgeConfig,
@@ -194,15 +284,20 @@ def handle_init(
     stdout_stream: Any = None,
 ) -> int:
     """Bind the current repository to Bridge by writing .bridge.json."""
-    org_id = (getattr(args, "org", None) or config.organization_id or "").strip()
+    org_id = (
+        getattr(args, "org", None)
+        or config.organization_id
+        or decode_api_key_claims(config.api_key).get("organizationId")
+        or ""
+    ).strip()
     if not org_id:
         emit_output(
             {
                 "ok": False,
                 "error": "ORG_ID_REQUIRED",
-                "message": "Provide --org <organizationId> or set BRIDGE_ORG_ID.",
+                "message": "Run 'bridge auth login --api-key <key>' first, or provide --org <organizationId>.",
             },
-            "Error: Provide --org <organizationId> to bind this repository.",
+            "Error: Run 'bridge auth login --api-key <key>' first, or provide --org <organizationId>.",
             force_json=force_json,
             stdout_stream=stdout_stream,
         )
@@ -221,9 +316,11 @@ def handle_init(
         repository=repo,
         api_url=api_url,
     )
+    gitignore_updated = _ignore_local_state(config.workspace_root)
     payload = {
         "ok": True,
         "plugin": "bridge",
+        "gitignoreUpdated": gitignore_updated,
         "configPath": str(cfg_path),
         "organizationId": org_id,
         "repository": repo,
@@ -237,7 +334,9 @@ def handle_init(
             f"  Organization ID : {org_id}",
             f"  Repository      : {repo}",
             f"  API URL         : {api_url}",
-            "  Next Step       : export BRIDGE_API_KEY=\"xrkey_v1...\" && bridge status",
+            *(["  Git             : Added .bridge/ to .gitignore"] if gitignore_updated else []),
+            "  Next Step       : "
+            + ("bridge status" if config.is_authenticated else "bridge auth login --api-key <key>"),
         ],
         force_json=force_json,
         stdout_stream=stdout_stream,

@@ -43,7 +43,7 @@ def handle_scratchpad_read(
             n.get("topic", ""),
             n.get("repository", ""),
             n.get("gitBranch", ""),
-            n.get("agentId", ""),
+            n.get("agentId") or str(n.get("updatedByEmail") or "").removesuffix("@workspace.os"),
             (n.get("bodyMarkdown") or n.get("body") or "")[:60],
         ]
         for n in notes

@@ -191,6 +191,7 @@ def test_auth_init_status_and_setup_commands(tmp_path: Path) -> None:
         env=env,
         stdin_stream=io.StringIO("xrkey_v1.acme_secret_key_123456\n"),
         stdout_stream=out_login,
+        transport=lambda _req, _timeout: (200, b'{"ok": true, "keys": []}'),
     )
     assert code_login == EXIT_OK
     assert cred_file.is_file()

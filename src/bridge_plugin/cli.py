@@ -264,7 +264,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     release_p = subparsers.add_parser("release", help="Release active scope claims.")
     release_p.add_argument("--lease-id", help="Specific lease ID to release.")
-    release_p.add_argument("--all", action="store_true", help="Release all claims.")
+    release_p.add_argument("--all", action="store_true", help="Release all of this agent's claims.")
+    release_p.add_argument("--everyone", action="store_true", help="Release every agent's claims in this repository.")
     release_p.add_argument("--repo", help="Repository override.")
     release_p.add_argument("--agent", help="Agent ID override.")
     release_p.add_argument("--json", action="store_true", default=False)
@@ -365,6 +366,7 @@ def run_cli(
             return handle_auth_login(
                 args,
                 config,
+                client,
                 force_json=force_json,
                 stdin_stream=stdin_stream,
                 stdout_stream=stdout_stream,

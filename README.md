@@ -68,7 +68,7 @@ export BRIDGE_API_KEY="xrkey_v1..."
 bridge auth login --api-key "$BRIDGE_API_KEY"
 
 # 2. Bind your repository (.bridge.json)
-bridge init --org org_northstar --repo northstar/web-app
+bridge init
 
 # 3. Start a task branch (binds branch -> taskId in .bridge/state.json)
 bridge tasks start task_104 --slug oauth-pkce

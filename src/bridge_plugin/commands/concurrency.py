@@ -185,6 +185,7 @@ def handle_release(
     agent_id = runtime["agentId"]
     lease_id = getattr(args, "lease_id", None)
     release_all = bool(getattr(args, "all", False))
+    everyone = bool(getattr(args, "everyone", False))
     repo = getattr(args, "repo", None) or config.repository or runtime["repository"]
 
     local_claims = load_local_claims(config)
@@ -194,10 +195,7 @@ def handle_release(
         if lease_id and item.get("id") == lease_id:
             released_local += 1
             continue
-        if release_all and (item.get("agentId") == agent_id or not getattr(args, "agent", None)):
-            released_local += 1
-            continue
-        if not lease_id and not release_all and item.get("agentId") == agent_id:
+        if everyone or (not lease_id and item.get("agentId") == agent_id):
             released_local += 1
             continue
         kept.append(item)
@@ -205,18 +203,38 @@ def handle_release(
 
     remote_released = 0
     if config.is_authenticated or config.is_bound:
-        body: dict[str, Any] = {
-            "action": "release",
-            "repository": repo,
-            "agentId": None if release_all else agent_id,
-            "leaseId": lease_id,
-            "all": release_all,
-        }
+        # --all means all of this agent's claims. Clearing other agents' claims takes --everyone.
+        body: dict[str, Any] = {"action": "release", "repository": repo}
+        if lease_id:
+            body["leaseId"] = lease_id
+        elif everyone:
+            body["all"] = True
+        else:
+            body["agentId"] = agent_id
+            if release_all:
+                body["all"] = True
         if config.organization_id:
             body["organizationId"] = config.organization_id
         resp = client.request("POST", "/api/v1/fleet/leases", json_body=body, require_auth=False)
-        if resp.ok:
-            remote_released = int(resp.data.get("releasedCount", 0) or 0)
+        if not resp.ok:
+            message = (
+                f"Released {released_local} local claim(s), but Bridge did not release them "
+                f"({resp.error or 'request failed'}). They stay active until they expire."
+            )
+            emit_output(
+                {
+                    "ok": False,
+                    "released": False,
+                    "error": resp.error or "RELEASE_FAILED",
+                    "message": message,
+                    "releasedLocalCount": released_local,
+                },
+                f"Error: {message}",
+                force_json=force_json,
+                stdout_stream=stdout_stream,
+            )
+            return resp.exit_code or EXIT_ERROR
+        remote_released = int(resp.data.get("releasedCount", 0) or 0)
 
     total_released = max(released_local, remote_released)
     payload = {

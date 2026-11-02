@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -28,6 +29,19 @@ SUPPORTED_API_KEY_ENVS = (
     "WORKSPACE_API_KEY",
     "XRAY_DISPATCH_API_KEY",
 )
+
+
+def decode_api_key_claims(api_key: str | None) -> dict[str, Any]:
+    """Reads the workspace a key was issued for. Only the server can say whether the key is valid."""
+    parts = (api_key or "").strip().split(".")
+    if len(parts) < 2 or parts[0] != "xrkey_v1":
+        return {}
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+    except (ValueError, TypeError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 @dataclass
