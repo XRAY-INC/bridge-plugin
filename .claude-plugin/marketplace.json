@@ -5,15 +5,15 @@
     "email": "engineering@xray.tech"
   },
   "metadata": {
-    "description": "Official Claude Code & MCP plugin catalog for Bridge (https://bridge.xray.tech)",
-    "version": "0.1.0"
+    "description": "Official Cross-Agent Skills (agentskills.io), CLI (bridge / brg), and MCP plugin catalog for Bridge (https://bridge.xray.tech)",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "bridge",
       "source": "./",
-      "description": "Bridge CLI (bridge / brg) and low-token MCP server for 1-Click Decisions, seam logging, scope claims, and two-sided task verification.",
-      "version": "0.1.0",
+      "description": "Universal Agent Context Gate (bridge context / bridge_context_pull), Scoped Morning Briefs (bridge_brief_latest), 1-Click Decisions, seam ledger, and cross-worktree scope claims across Claude Code, Claude Desktop, OpenAI Codex, Cursor, Windsurf, and Gemini CLI.",
+      "version": "0.2.0",
       "author": {
         "name": "Bridge Engineering",
         "email": "engineering@xray.tech"
@@ -21,7 +21,15 @@
       "homepage": "https://bridge.xray.tech",
       "repository": "https://github.com/XRAY-INC/bridge-plugin",
       "license": "MIT",
-      "category": "productivity"
+      "category": "productivity",
+      "skills": [
+        "./skills/bridge-context",
+        "./skills/bridge-cli",
+        "./skills/bridge-api",
+        "./skills/bridge-updates",
+        "./skills/bridge"
+      ],
+      "hooks": "./hooks/hooks.json"
     }
   ]
 }

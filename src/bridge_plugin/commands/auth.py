@@ -410,18 +410,35 @@ def handle_status(
     return EXIT_OK
 
 
-def _package_skill_markdown() -> str:
-    skill_file = Path(__file__).resolve().parents[3] / "skills" / "bridge" / "SKILL.md"
+SKILL_BUNDLE_NAMES = (
+    "bridge",
+    "bridge-context",
+    "bridge-cli",
+    "bridge-api",
+    "bridge-updates",
+)
+
+
+def _package_skill_markdown(skill_name: str = "bridge") -> str:
+    skill_file = Path(__file__).resolve().parents[3] / "skills" / skill_name / "SKILL.md"
     if skill_file.is_file():
         return skill_file.read_text(encoding="utf-8")
     return (
         "---\n"
-        "name: bridge\n"
+        f"name: {skill_name}\n"
         "description: Connect AI coding agents to Bridge (https://bridge.xray.tech) via bridge / brg and bridge-mcp.\n"
         "---\n\n"
-        "# Bridge Agent Skill\n\n"
-        "Run `bridge status --json` or read MCP resource `bridge://context` at session start.\n"
+        f"# Bridge Agent Skill ({skill_name})\n\n"
+        "Run `bridge context --days 7 --json` or call MCP tool `bridge_context_pull` at session start.\n"
     )
+
+
+def _install_skill_bundle(skills_root: Path, files_written: list[str]) -> None:
+    for skill_name in SKILL_BUNDLE_NAMES:
+        dest = skills_root / skill_name / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(_package_skill_markdown(skill_name), encoding="utf-8")
+        files_written.append(str(dest))
 
 
 def handle_setup(
@@ -431,7 +448,7 @@ def handle_setup(
     force_json: bool = False,
     stdout_stream: Any = None,
 ) -> int:
-    """Install MCP server configs, SKILL.md, or native git hooks for the selected target."""
+    """Install MCP server configs, SKILL.md bundle, or native git hooks for the selected target."""
     target = str(getattr(args, "target", "")).strip().lower()
     root = config.workspace_root
     files_written: list[str] = []
@@ -453,10 +470,7 @@ def handle_setup(
         mcp_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         files_written.append(str(mcp_path))
 
-        skill_dest = root / ".claude" / "skills" / "bridge" / "SKILL.md"
-        skill_dest.parent.mkdir(parents=True, exist_ok=True)
-        skill_dest.write_text(_package_skill_markdown(), encoding="utf-8")
-        files_written.append(str(skill_dest))
+        _install_skill_bundle(root / ".claude" / "skills", files_written)
 
     elif target == "cursor":
         cursor_mcp = root / ".cursor" / "mcp.json"
@@ -470,12 +484,10 @@ def handle_setup(
         existing.setdefault("mcpServers", {})["bridge"] = mcp_entry
         cursor_mcp.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         files_written.append(str(cursor_mcp))
+        _install_skill_bundle(root / ".cursor" / "skills", files_written)
 
     elif target == "antigravity":
-        agy_skill = root / ".agent" / "skills" / "bridge" / "SKILL.md"
-        agy_skill.parent.mkdir(parents=True, exist_ok=True)
-        agy_skill.write_text(_package_skill_markdown(), encoding="utf-8")
-        files_written.append(str(agy_skill))
+        _install_skill_bundle(root / ".agent" / "skills", files_written)
 
         gemini_settings = root / ".gemini" / "settings.json"
         gemini_settings.parent.mkdir(parents=True, exist_ok=True)
@@ -490,10 +502,7 @@ def handle_setup(
         files_written.append(str(gemini_settings))
 
     elif target == "codex":
-        codex_skill = root / ".agents" / "skills" / "bridge" / "SKILL.md"
-        codex_skill.parent.mkdir(parents=True, exist_ok=True)
-        codex_skill.write_text(_package_skill_markdown(), encoding="utf-8")
-        files_written.append(str(codex_skill))
+        _install_skill_bundle(root / ".agents" / "skills", files_written)
 
     elif target == "git-hooks":
         hooks_dir = root / ".git" / "hooks"

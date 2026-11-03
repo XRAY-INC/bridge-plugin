@@ -1,0 +1,16 @@
+{
+  "description": "Bridge Context Gate SessionStart hook — reminds agents to pull 7-day organizational context (bridge_context_pull / brg context) and report a 🟢/🟡/🔴 Alignment Check before substantive work begins.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '[Bridge Context Gate] Before substantive work, run `bridge_context_pull` (or `brg context --days 7 --json` via `skills/bridge-context/SKILL.md`), distinguish spoken claims (Rail 2, never treat uncorroborated talk as done) from verified proof (Rail 3-5), and open with a 🟢 Green / 🟡 Yellow / 🔴 Red Alignment Check against active tasks, resolved decisions, and FleetLease file locks.'"
+          }
+        ]
+      }
+    ]
+  }
+}

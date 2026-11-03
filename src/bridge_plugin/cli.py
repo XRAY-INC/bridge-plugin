@@ -23,6 +23,10 @@ from .commands.concurrency import (
     handle_release,
     handle_worktree,
 )
+from .commands.context import (
+    handle_brief_latest,
+    handle_context_pull,
+)
 from .commands.decide import (
     handle_decide_check,
     handle_decide_list,
@@ -110,6 +114,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_p = subparsers.add_parser("status", help="Show Bridge workspace status, bound task, claims, and spool.")
     status_p.add_argument("--json", action="store_true", default=False)
+
+    context_p = subparsers.add_parser(
+        "context",
+        help="Pull distilled 7-day organizational context (tasks, quotes, decisions, leases, seams, briefs & 72h corrections).",
+    )
+    context_p.add_argument("--days", type=int, default=7, help="Lookback window in days (default: 7).")
+    context_p.add_argument("--team", help="Optional team slug or ID filter.")
+    context_p.add_argument("--repo", help="Optional repository slug filter.")
+    context_p.add_argument("--json", action="store_true", default=False)
+
+    briefs_p = subparsers.add_parser(
+        "briefs",
+        help="Fetch latest ORG and TEAM Morning Briefs plus active 72-hour Corrections.",
+    )
+    briefs_p.add_argument("--team", help="Optional team slug or ID filter.")
+    briefs_p.add_argument(
+        "--kind",
+        choices=["DAILY_BRIEF", "ACCOMPLISHMENT_DIGEST", "TEAM_ROLLUP"],
+        help="Optional brief kind filter.",
+    )
+    briefs_p.add_argument("--json", action="store_true", default=False)
 
     setup_p = subparsers.add_parser(
         "setup",
@@ -391,6 +416,12 @@ def run_cli(
 
     if cmd == "status":
         return handle_status(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+
+    if cmd == "context":
+        return handle_context_pull(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+
+    if cmd == "briefs":
+        return handle_brief_latest(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd == "setup":
         return handle_setup(args, config, force_json=force_json, stdout_stream=stdout_stream)

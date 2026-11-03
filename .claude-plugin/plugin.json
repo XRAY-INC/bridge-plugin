@@ -1,7 +1,7 @@
 {
   "name": "bridge",
-  "version": "0.1.0",
-  "description": "Connect AI coding agents and engineering teams to Bridge (https://bridge.xray.tech) for interstitial seam logging, 1-Click Decisions governance, multi-agent scope claims, issue-driven branching, and two-sided fact reconciliation.",
+  "version": "0.2.0",
+  "description": "Connect AI coding agents (Claude Code, Claude Desktop, OpenAI Codex, Cursor, Windsurf, Gemini CLI) to Bridge (https://bridge.xray.tech) for 7-day organizational context gating (🟢/🟡/🔴 Alignment Check), Scoped Morning Briefs & 72h corrections, 1-Click Decisions, interstitial seams, and cross-worktree scope claims.",
   "author": {
     "name": "Bridge Engineering",
     "email": "engineering@xray.tech",
@@ -12,14 +12,18 @@
   "license": "MIT",
   "keywords": [
     "bridge",
+    "agentskills",
+    "context-gate",
     "governance",
     "decisions",
+    "morning-briefs",
     "seam-ledger",
     "multi-agent",
     "scope-claims",
     "mcp"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "commands": [
     "./commands/bridge-status.md",
     "./commands/bridge-decide.md",

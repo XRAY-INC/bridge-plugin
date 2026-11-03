@@ -15,6 +15,10 @@ from .commands.concurrency import (
     handle_claims_list,
     handle_release,
 )
+from .commands.context import (
+    handle_brief_latest,
+    handle_context_pull,
+)
 from .commands.decide import (
     handle_decide_check,
     handle_decide_list,
@@ -107,33 +111,56 @@ MCP_PROMPTS: list[dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# 3. Six Consolidated Action Tools (< 900 total schema tokens)
+# 3. Eight Consolidated Action Tools (< 900 total schema tokens)
 # ---------------------------------------------------------------------------
 
 MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bridge_context",
-        "description": "Read unified Bridge status, branch task binding, active claims, and working-memory scratchpad.",
+        "description": "Read or update Bridge status, branch binding, claims, and scratchpad.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "topic": {"type": "string", "description": "Optional scratchpad topic filter"},
-                "write_topic": {"type": "string", "description": "Topic to write to scratchpad"},
-                "write_body": {"type": "string", "description": "Markdown body to write to scratchpad"},
+                "topic": {"type": "string"},
+                "write_topic": {"type": "string"},
+                "write_body": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "bridge_context_pull",
+        "description": "Pull 7-day org context: tasks, quotes, citations, decisions, leases, seams, briefs & 72h corrections.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7},
+                "team": {"type": "string"},
+                "repo": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "bridge_brief_latest",
+        "description": "Fetch latest ORG/TEAM Morning Briefs and 72h Corrections.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "team": {"type": "string"},
+                "kind": {"type": "string", "enum": ["DAILY_BRIEF", "ACCOMPLISHMENT_DIGEST", "TEAM_ROLLUP"]},
             },
         },
     },
     {
         "name": "bridge_seam",
-        "description": "Log, edit, retract, or list interstitial seams (win, decision, friction, handoff).",
+        "description": "Log, edit, retract, or list seams (win, decision, friction, handoff).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["log", "edit", "retract", "list"], "default": "log"},
                 "tag": {"type": "string", "enum": ["win", "decision", "friction", "handoff"], "default": "win"},
-                "summary": {"type": "string", "description": "Seam summary text"},
-                "seam_id": {"type": "string", "description": "Seam ID or 'last' for edit/retract"},
-                "task_id": {"type": "string", "description": "Optional task ID override"},
+                "summary": {"type": "string"},
+                "seam_id": {"type": "string"},
+                "task_id": {"type": "string"},
             },
         },
     },
@@ -152,10 +179,10 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "title": {"type": "string"},
                 "context": {"type": "string"},
                 "urgency": {"type": "string", "enum": ["CRITICAL", "HIGH", "STANDARD", "LOW"]},
-                "options": {"type": "string", "description": "Comma-separated option labels or JSON array"},
-                "criteria": {"type": "string", "description": "Comma-separated name:weight pairs"},
-                "option": {"type": "string", "description": "Option ID or index for score/resolve"},
-                "criterion": {"type": "string", "description": "Criterion ID or index for score"},
+                "options": {"type": "string"},
+                "criteria": {"type": "string"},
+                "option": {"type": "string"},
+                "criterion": {"type": "string"},
                 "score": {"type": "integer", "minimum": 1, "maximum": 10},
                 "rationale": {"type": "string"},
                 "task_id": {"type": "string"},
@@ -164,13 +191,13 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_scope",
-        "description": "Claim, release, or list cross-worktree file/directory scope leases.",
+        "description": "Claim, release, or list cross-worktree file scope leases.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["claim", "release", "list"], "default": "list"},
-                "globs": {"type": "array", "items": {"type": "string"}, "description": "File globs to claim"},
-                "ttl": {"type": "string", "description": "Lease TTL (e.g. 30m)"},
+                "globs": {"type": "array", "items": {"type": "string"}},
+                "ttl": {"type": "string"},
                 "reason": {"type": "string"},
                 "lease_id": {"type": "string"},
                 "all": {"type": "boolean"},
@@ -185,7 +212,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "action": {"type": "string", "enum": ["list", "claim", "complete"], "default": "list"},
                 "job_id": {"type": "string"},
-                "globs": {"type": "string", "description": "Comma-separated globs when claiming"},
+                "globs": {"type": "string"},
                 "pr_url": {"type": "string"},
                 "commit_sha": {"type": "string"},
                 "notes": {"type": "string"},
@@ -194,12 +221,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_fact",
-        "description": "Ingest a bounded (<=280 char) verification fact for P16 two-sided task reconciliation.",
+        "description": "Ingest a bounded (<=280 char) verification fact for task reconciliation.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "statement": {"type": "string", "description": "Bounded <=280 char fact statement"},
-                "task_id": {"type": "string", "description": "Task or ticket ID"},
+                "statement": {"type": "string"},
+                "task_id": {"type": "string"},
                 "kind": {
                     "type": "string",
                     "enum": ["OUTCOME", "DECISION", "COMMITMENT", "BLOCKER", "ACCOMPLISHMENT"],
@@ -408,6 +435,23 @@ def call_mcp_tool_handler(
         else:
             result_data = build_context_snapshot(config, client)
             code = EXIT_OK
+
+    elif name == "bridge_context_pull":
+        ns = argparse.Namespace(
+            days=args_dict.get("days", 7),
+            team=args_dict.get("team"),
+            repo=args_dict.get("repo") or args_dict.get("repository"),
+        )
+        code = handle_context_pull(ns, config, client, force_json=True, stdout_stream=buf)
+        result_data = buf.get_json()
+
+    elif name == "bridge_brief_latest":
+        ns = argparse.Namespace(
+            team=args_dict.get("team"),
+            kind=args_dict.get("kind"),
+        )
+        code = handle_brief_latest(ns, config, client, force_json=True, stdout_stream=buf)
+        result_data = buf.get_json()
 
     elif name == "bridge_seam":
         action = str(args_dict.get("action") or "log").lower()
