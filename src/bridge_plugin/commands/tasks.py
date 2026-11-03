@@ -45,6 +45,11 @@ def handle_tasks_list(
             t for t in tasks
             if isinstance(t, dict) and str(t.get("status", "")).upper() == status_filter
         ]
+    else:
+        tasks = [
+            t for t in tasks
+            if isinstance(t, dict) and str(t.get("status", "")).upper() != "CANCELED"
+        ]
 
     rows = [
         [
@@ -114,6 +119,10 @@ def handle_tasks_create(
         body["externalUrl"] = str(external_url).strip()[:500]
     if proof:
         body["verificationProof"] = str(proof).strip()[:500]
+    parent_id = getattr(args, "parent_id", None) or getattr(args, "parent", None)
+    if parent_id:
+        body["parentTaskId"] = str(parent_id).strip()
+        body["externalParentRef"] = str(parent_id).strip()
     if config.organization_id:
         body["organizationId"] = config.organization_id
 
@@ -142,6 +151,118 @@ def handle_tasks_create(
     return resp.exit_code
 
 
+def handle_tasks_update(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Update a WorkspaceTask status, parent link, or rationale via PATCH /api/v1/tasks."""
+    task_id = str(getattr(args, "task_id", "") or "").strip()
+    if not task_id:
+        emit_output(
+            {"ok": False, "error": "TASK_ID_REQUIRED", "message": "taskId is required."},
+            "Error: taskId is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    body: dict[str, Any] = {"taskId": task_id}
+    status_val = getattr(args, "status", None)
+    if status_val:
+        body["status"] = str(status_val).strip().upper()
+    parent_id = getattr(args, "parent_id", None) or getattr(args, "parent", None)
+    if parent_id is not None:
+        body["parentTaskId"] = str(parent_id).strip() or None
+        body["externalParentRef"] = str(parent_id).strip() or None
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        body["aiJudgeReasoning"] = str(reason).strip()[:500]
+        body["decisionRationale"] = str(reason).strip()[:500]
+    tier = getattr(args, "tier", None)
+    if tier:
+        body["verificationTier"] = str(tier).strip().upper()
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request("PATCH", "/api/v1/tasks", json_body=body)
+    task_obj = resp.data.get("task") if isinstance(resp.data.get("task"), dict) else {}
+    out = {**resp.data, "taskId": task_obj.get("id") or task_id}
+    human = (
+        f"Updated task {task_id} (status={task_obj.get('status') or body.get('status', 'unchanged')}, parent={task_obj.get('externalParentRef') or body.get('externalParentRef')})"
+        if resp.ok
+        else f"Error updating task {task_id}: {resp.error}"
+    )
+    emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
+
+def handle_tasks_cancel(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Cancel one or more duplicate/superseded WorkspaceTasks via PATCH /api/v1/tasks."""
+    raw_ids = getattr(args, "task_ids", None) or []
+    if isinstance(raw_ids, str):
+        raw_ids = [raw_ids]
+    task_ids = [str(tid).strip() for tid in raw_ids if str(tid).strip()]
+    if not task_ids:
+        emit_output(
+            {"ok": False, "error": "TASK_ID_REQUIRED", "message": "At least one taskId is required."},
+            "Error: At least one taskId is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    reason = str(getattr(args, "reason", "") or "Canceled via Bridge CLI").strip()[:500]
+    canceled: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for tid in task_ids:
+        body: dict[str, Any] = {
+            "taskId": tid,
+            "status": "CANCELED",
+            "aiJudgeReasoning": reason,
+        }
+        if config.organization_id:
+            body["organizationId"] = config.organization_id
+        resp = client.request("PATCH", "/api/v1/tasks", json_body=body)
+        if resp.ok:
+            task_obj = resp.data.get("task") if isinstance(resp.data.get("task"), dict) else {}
+            canceled.append({
+                "taskId": tid,
+                "status": task_obj.get("status", "CANCELED"),
+                "title": task_obj.get("title", ""),
+            })
+        else:
+            errors.append({"taskId": tid, "error": resp.error})
+
+    ok = len(errors) == 0
+    payload = {
+        "ok": ok,
+        "canceledCount": len(canceled),
+        "canceled": canceled,
+        "errors": errors,
+        "reason": reason,
+    }
+    human_lines = [
+        f"Canceled {tid} ({item.get('title', '')})" for item in canceled for tid in [item.get("taskId")]
+    ]
+    for err in errors:
+        human_lines.append(f"Error canceling {err['taskId']}: {err['error']}")
+    emit_output(payload, human_lines or "No tasks canceled.", force_json=force_json, stdout_stream=stdout_stream)
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+
 
 def handle_tasks_start(
     args: Any,
@@ -164,18 +285,56 @@ def handle_tasks_start(
 
     task_title: str | None = getattr(args, "slug", None)
     task_status = "TODO"
+    target_task: dict[str, Any] | None = None
+    task_map: dict[str, dict[str, Any]] = {}
 
     # Attempt to fetch task metadata when authenticated/bound and online
     if config.is_authenticated or config.is_bound:
         resp = client.request("GET", "/api/v1/tasks", require_auth=False)
         if resp.ok and isinstance(resp.data.get("tasks"), list):
             for item in resp.data["tasks"]:
-                if isinstance(item, dict) and (
-                    item.get("id") == task_id or item.get("externalId") == task_id
-                ):
-                    task_title = task_title or str(item.get("title") or "")
-                    task_status = str(item.get("status") or "TODO").upper()
-                    break
+                if isinstance(item, dict):
+                    tid = str(item.get("id") or "")
+                    ext_id = str(item.get("externalId") or "")
+                    if tid:
+                        task_map[tid] = item
+                    if ext_id:
+                        task_map[ext_id] = item
+                    if (tid == task_id or ext_id == task_id) and target_task is None:
+                        target_task = item
+                        task_title = task_title or str(item.get("title") or "")
+                        task_status = str(item.get("status") or "TODO").upper()
+
+    if target_task:
+        curr_task = target_task
+        visited_ancestors: set[str] = set()
+        while curr_task:
+            parent_ref = curr_task.get("parentTaskId") or curr_task.get("externalParentRef")
+            if not parent_ref or str(parent_ref) in visited_ancestors:
+                break
+            visited_ancestors.add(str(parent_ref))
+            parent_task = task_map.get(str(parent_ref))
+            if parent_task:
+                if str(parent_task.get("status") or "").upper() == "BLOCKED_ON_DECISION":
+                    payload = {
+                        "ok": False,
+                        "blocked": True,
+                        "error": "PARENT_TASK_BLOCKED_ON_DECISION",
+                        "taskId": task_id,
+                        "parentTaskId": parent_task.get("id") or str(parent_ref),
+                        "status": "BLOCKED_ON_DECISION",
+                        "message": f"Task '{task_id}' cannot be started because ancestor task '{parent_task.get('id') or parent_ref}' is BLOCKED_ON_DECISION. Resolve the open Decision Card before starting.",
+                    }
+                    emit_output(
+                        payload,
+                        f"BLOCKED: Ancestor task '{parent_task.get('id') or parent_ref}' has status BLOCKED_ON_DECISION.",
+                        force_json=force_json,
+                        stdout_stream=stdout_stream,
+                    )
+                    return EXIT_CONCURRENCY_BLOCK
+                curr_task = parent_task
+            else:
+                break
 
     if task_status == "BLOCKED_ON_DECISION":
         payload = {
@@ -471,7 +630,6 @@ def handle_jobs_dispatch(
     )
     emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
     return resp.exit_code
-
 
 
 def handle_jobs_claim(

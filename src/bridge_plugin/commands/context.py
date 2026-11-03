@@ -157,6 +157,13 @@ def _format_context_human(payload: dict[str, Any]) -> list[str]:
             if quote:
                 prefix = f"{speaker}: " if speaker and not str(quote).startswith(f"{speaker}:") else ""
                 lines.append(f"      \"{prefix}{quote}\"")
+            parent_rationale = (
+                task.get("parentSteeringRationale")
+                or (task.get("parentTask") or {}).get("decisionRationale")
+                or (task.get("decisionRationale") if (task.get("parentTaskId") or task.get("externalParentRef")) else None)
+            )
+            if parent_rationale:
+                lines.append(f'      ↳ Steering Rationale (from Parent): "{parent_rationale}"')
 
     leases = payload.get("activeLeases") or payload.get("leases") or []
     if leases:

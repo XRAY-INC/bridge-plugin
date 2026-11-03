@@ -54,9 +54,11 @@ from .commands.tasks import (
     handle_jobs_complete,
     handle_jobs_dispatch,
     handle_jobs_list,
+    handle_tasks_cancel,
     handle_tasks_create,
     handle_tasks_list,
     handle_tasks_start,
+    handle_tasks_update,
     handle_tasks_verify,
 )
 from .config import resolve_config
@@ -255,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     t_create_p.add_argument("--external-url", help="Optional external tracker URL.")
     t_create_p.add_argument("--tier", default="UNVERIFIED", help="Initial verification tier.")
     t_create_p.add_argument("--proof", help="Optional verification proof note.")
+    t_create_p.add_argument("--parent", dest="parent_id", default=None, help="Parent task ID or external tracker reference.")
     t_create_p.add_argument("--json", action="store_true", default=False)
 
     t_start_p = tasks_sub.add_parser("start", help="Checkout feat/<taskId>-<slug> and bind branch -> taskId in .bridge/state.json.")
@@ -272,6 +275,19 @@ def build_parser() -> argparse.ArgumentParser:
     t_verify_p.add_argument("--kind", default="OUTCOME", help="Fact kind (OUTCOME, DECISION, COMMITMENT, BLOCKER, ACCOMPLISHMENT).")
     t_verify_p.add_argument("--confidence", type=int, default=90, help="Confidence (1-100).")
     t_verify_p.add_argument("--json", action="store_true", default=False)
+
+    t_update_p = tasks_sub.add_parser("update", help="Update task status, parent link (--parent), or rationale.")
+    t_update_p.add_argument("task_id", help="Task ID.")
+    t_update_p.add_argument("--status", help="New status (BACKLOG, TODO, IN_PROGRESS, BLOCKED_ON_DECISION, DONE, CANCELED).")
+    t_update_p.add_argument("--parent", dest="parent_id", default=None, help="Parent task ID or external tracker reference.")
+    t_update_p.add_argument("--reason", help="Steering rationale or update note.")
+    t_update_p.add_argument("--tier", help="Verification tier override.")
+    t_update_p.add_argument("--json", action="store_true", default=False)
+
+    t_cancel_p = tasks_sub.add_parser("cancel", help="Cancel one or more duplicate/superseded tasks.")
+    t_cancel_p.add_argument("task_ids", nargs="+", help="One or more Task IDs to cancel.")
+    t_cancel_p.add_argument("--reason", default="Superseded / duplicate task canceled via Bridge CLI", help="Cancellation reason.")
+    t_cancel_p.add_argument("--json", action="store_true", default=False)
 
     jobs_parser = subparsers.add_parser("jobs", help="List, dispatch, claim, or complete dispatched agent jobs.")
     jobs_sub = jobs_parser.add_subparsers(dest="jobs_action")
@@ -550,6 +566,10 @@ def run_cli(
                 stdin_stream=stdin_stream,
                 stdout_stream=stdout_stream,
             )
+        if sub == "update":
+            return handle_tasks_update(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub == "cancel":
+            return handle_tasks_cancel(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd == "jobs":
         sub = getattr(args, "jobs_action", "list")
