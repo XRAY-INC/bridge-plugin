@@ -29,8 +29,10 @@ from .commands.context import (
 )
 from .commands.decide import (
     handle_decide_check,
+    handle_decide_edit,
     handle_decide_list,
     handle_decide_propose,
+    handle_decide_retract,
     handle_decide_resolve,
     handle_decide_score,
     handle_decide_show,
@@ -265,6 +267,24 @@ def build_parser() -> argparse.ArgumentParser:
     dec_res_p.add_argument("--option", required=True, help="Chosen Option ID.")
     dec_res_p.add_argument("--rationale", help="Decision rationale.")
     dec_res_p.add_argument("--json", action="store_true", default=False)
+
+    for edit_cmd in ("edit", "update"):
+        dec_edit_p = decide_sub.add_parser(edit_cmd, help="Edit an existing decision's title, context, options (with pros/cons), criteria, or scores in place.")
+        dec_edit_p.add_argument("decision_id", help="Decision ID.")
+        dec_edit_p.add_argument("--title", help="Updated decision title.")
+        dec_edit_p.add_argument("--context", help="Updated trade-off context summary.")
+        dec_edit_p.add_argument("--urgency", help="Updated urgency (CRITICAL, HIGH, STANDARD, LOW).")
+        dec_edit_p.add_argument("--options", help="Updated options (comma-separated labels or JSON array with pros/cons).")
+        dec_edit_p.add_argument("--criteria", help="Updated criteria ('Name:Weight' pairs or JSON array).")
+        dec_edit_p.add_argument("--scores", help="Updated matrix scores ('optIdx:critIdx:score[:rationale]' or JSON array).")
+        dec_edit_p.add_argument("--json", action="store_true", default=False)
+
+    for retract_cmd in ("retract", "rm", "delete"):
+        dec_ret_p = decide_sub.add_parser(retract_cmd, help="Retract (archive) or delete a decision so it does not clutter /decide.")
+        dec_ret_p.add_argument("decision_id", help="Decision ID.")
+        dec_ret_p.add_argument("--hard", action="store_true", default=False, help="Permanently delete the decision record.")
+        dec_ret_p.add_argument("--rationale", help="Optional retraction reason.")
+        dec_ret_p.add_argument("--json", action="store_true", default=False)
 
     dec_chk_p = decide_sub.add_parser("check", help="Check if active task has an open blocking decision (exits 2 if blocked).")
     dec_chk_p.add_argument("--task", help="Task ID override.")
@@ -620,6 +640,10 @@ def run_cli(
             return handle_decide_score(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "resolve":
             return handle_decide_resolve(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub in ("edit", "update"):
+            return handle_decide_edit(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub in ("retract", "rm", "delete"):
+            return handle_decide_retract(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "check":
             return handle_decide_check(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 

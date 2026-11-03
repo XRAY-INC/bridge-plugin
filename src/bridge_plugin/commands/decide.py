@@ -458,6 +458,77 @@ def handle_decide_resolve(
     return resp.exit_code
 
 
+def handle_decide_edit(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Mutate an existing decision's title, context, options (with pros/cons), criteria, or scores in place."""
+    decision_id = str(getattr(args, "decision_id", "")).strip()
+    body: dict[str, Any] = {
+        "action": "UPDATE",
+        "decisionId": decision_id,
+    }
+    if getattr(args, "title", None):
+        body["title"] = str(args.title).strip()
+    if getattr(args, "context", None):
+        body["contextSummary"] = str(args.context).strip()
+    if getattr(args, "urgency", None):
+        body["urgency"] = str(args.urgency).strip().upper()
+    if getattr(args, "options", None):
+        body["options"] = _parse_options_input(args.options)
+    if getattr(args, "criteria", None):
+        body["criteria"] = _parse_criteria_input(args.criteria)
+    if getattr(args, "scores", None):
+        body["scores"] = _parse_scores_input(args.scores)
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request("POST", "/api/v1/decide/escalate", json_body=body)
+    human = (
+        f"Updated decision {decision_id} in place."
+        if resp.ok
+        else f"Error updating decision {decision_id}: {resp.error}"
+    )
+    emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
+
+def handle_decide_retract(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Retract (archive) or hard-delete a decision so it no longer takes up space on /decide."""
+    decision_id = str(getattr(args, "decision_id", "")).strip()
+    hard_delete = bool(getattr(args, "hard", False) or getattr(args, "decide_action", "") in ("delete", "rm"))
+    body: dict[str, Any] = {
+        "action": "DELETE" if hard_delete else "RETRACT",
+        "decisionId": decision_id,
+        "hardDelete": hard_delete,
+    }
+    if getattr(args, "rationale", None):
+        body["rationale"] = str(args.rationale).strip()
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request("POST", "/api/v1/decide/escalate", json_body=body)
+    verb = "Deleted" if hard_delete else "Retracted"
+    human = (
+        f"{verb} decision {decision_id}."
+        if resp.ok
+        else f"Error retracting decision {decision_id}: {resp.error}"
+    )
+    emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
+
 def handle_decide_check(
     args: Any,
     config: BridgeConfig,
