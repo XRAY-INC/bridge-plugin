@@ -1,4 +1,4 @@
-"""Tasks (list, start, verify) and Agent Jobs (list, claim, complete) commands."""
+"""Tasks (list, create, start, verify) and Agent Jobs (list, dispatch, claim, complete) commands."""
 
 from __future__ import annotations
 
@@ -61,6 +61,86 @@ def handle_tasks_list(
     table = format_table(["ID", "STATUS", "VERIFICATION", "SOURCE", "TITLE"], rows)
     emit_output(payload, table, force_json=force_json, stdout_stream=stdout_stream)
     return resp.exit_code
+
+
+def handle_tasks_create(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdin_stream: Any = None,
+    stdout_stream: Any = None,
+) -> int:
+    """Create a WorkspaceTask via POST /api/v1/tasks."""
+    title = resolve_stdin_or_arg(getattr(args, "title", None), stdin_stream=stdin_stream)
+    if not title or len(title.strip()) < 2:
+        emit_output(
+            {"ok": False, "error": "TITLE_REQUIRED", "message": "Task title (min 2 chars) is required."},
+            "Error: Task title is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    description = str(getattr(args, "description", "") or "").strip()
+    external_source = str(getattr(args, "source", "NATIVE") or "NATIVE").strip().upper()
+    external_id = getattr(args, "external_id", None)
+    external_url = getattr(args, "external_url", None)
+    tier = str(getattr(args, "tier", "UNVERIFIED") or "UNVERIFIED").strip().upper()
+    proof = getattr(args, "proof", None)
+
+    branch = detect_git_branch(cwd=config.workspace_root)
+    commit_sha = detect_git_commit_sha(cwd=config.workspace_root)
+    repo = config.repository or "workspace-repo"
+    idempotency_key = compute_idempotency_key(
+        org_id=config.organization_id or "",
+        repo=repo,
+        branch=branch,
+        commit_sha=commit_sha,
+        tag=f"TASK_CREATE:{external_source}:{external_id or ''}",
+        summary=title.strip(),
+    )
+
+    body: dict[str, Any] = {
+        "title": title.strip()[:240],
+        "description": description[:2000],
+        "externalSource": external_source,
+        "verificationTier": tier,
+    }
+    if external_id:
+        body["externalId"] = str(external_id).strip()[:80]
+    if external_url:
+        body["externalUrl"] = str(external_url).strip()[:500]
+    if proof:
+        body["verificationProof"] = str(proof).strip()[:500]
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request(
+        "POST",
+        "/api/v1/tasks",
+        json_body=body,
+        idempotency_key=idempotency_key,
+        spool_on_offline=True,
+    )
+    task_obj = resp.data.get("task") if isinstance(resp.data.get("task"), dict) else {}
+    task_id = task_obj.get("id") or resp.data.get("id")
+    out = {
+        **resp.data,
+        "taskId": task_id,
+        "idempotencyKey": idempotency_key,
+    }
+    human = (
+        f"[SPOOLED] Queued task creation: {title.strip()}"
+        if resp.spooled
+        else f"Created task {task_id}: {title.strip()}"
+        if resp.ok
+        else f"Error creating task: {resp.error}"
+    )
+    emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
 
 
 def handle_tasks_start(
@@ -301,6 +381,97 @@ def handle_jobs_list(
     table = format_table(["JOB_ID", "STATUS", "TASK_ID", "HARNESS", "CLAIMED_GLOBS"], rows)
     emit_output(resp.data, table, force_json=force_json, stdout_stream=stdout_stream)
     return resp.exit_code
+
+
+def handle_jobs_dispatch(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Create a ContextCapsule (if not provided) and dispatch a queued AgentJob via POST /api/v1/fleet/jobs."""
+    branch = detect_git_branch(cwd=config.workspace_root, env=config.env)
+    branch_state = get_branch_state(config, branch=branch)
+    task_id = str(
+        getattr(args, "task_flag", None)
+        or getattr(args, "task_id", None)
+        or branch_state.get("taskId")
+        or ""
+    ).strip()
+    if not task_id:
+        emit_output(
+            {
+                "ok": False,
+                "error": "TASK_ID_REQUIRED",
+                "message": "Provide a taskId or run on a branch bound via 'bridge tasks start'.",
+            },
+            "Error: taskId is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    capsule_id = str(getattr(args, "capsule", "") or "").strip()
+    goal_summary = str(getattr(args, "goal", "") or f"Execute task {task_id}").strip()
+    verify_cmd = str(getattr(args, "verify_cmd", None) or "npm test").strip()
+    harness = str(getattr(args, "harness", None) or "afk").strip()
+    raw_frozen = getattr(args, "frozen_globs", None) or "prisma/migrations/**"
+    frozen_globs = [g.strip() for g in str(raw_frozen).split(",") if g.strip()]
+
+    if not capsule_id:
+        cap_body: dict[str, Any] = {
+            "taskId": task_id,
+            "goalSummary": goal_summary,
+            "frozenGlobs": frozen_globs,
+            "verificationCommand": verify_cmd,
+        }
+        if getattr(args, "markdown", None):
+            cap_body["compiledMarkdown"] = str(args.markdown)
+        if config.organization_id:
+            cap_body["organizationId"] = config.organization_id
+
+        cap_resp = client.request("POST", "/api/v1/fleet/capsules", json_body=cap_body)
+        if not cap_resp.ok:
+            emit_output(
+                cap_resp.data,
+                f"Error creating context capsule for task {task_id}: {cap_resp.error}",
+                force_json=force_json,
+                stdout_stream=stdout_stream,
+            )
+            return cap_resp.exit_code
+        cap_obj = cap_resp.data.get("capsule") if isinstance(cap_resp.data.get("capsule"), dict) else {}
+        capsule_id = str(cap_obj.get("id") or cap_resp.data.get("capsuleId") or "").strip()
+
+    dispatch_body: dict[str, Any] = {
+        "action": "dispatch",
+        "taskId": task_id,
+        "contextCapsuleId": capsule_id,
+        "agentHarness": harness,
+    }
+    if config.organization_id:
+        dispatch_body["organizationId"] = config.organization_id
+
+    resp = client.request("POST", "/api/v1/fleet/jobs", json_body=dispatch_body)
+    job_id = resp.data.get("jobId") or (
+        resp.data.get("job", {}).get("id") if isinstance(resp.data.get("job"), dict) else None
+    )
+    out = {
+        **resp.data,
+        "taskId": task_id,
+        "contextCapsuleId": capsule_id,
+        "jobId": job_id,
+        "agentHarness": harness,
+    }
+    human = (
+        f"Dispatched job {job_id} for task {task_id} (capsule: {capsule_id}, harness: {harness})."
+        if resp.ok
+        else f"Error dispatching job for task {task_id}: {resp.error}"
+    )
+    emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
 
 
 def handle_jobs_claim(

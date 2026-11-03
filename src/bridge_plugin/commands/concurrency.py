@@ -77,10 +77,11 @@ def handle_claim(
 
     runtime = detect_runtime_context(
         cwd=config.workspace_root,
+        env=config.env,
         explicit_agent=getattr(args, "agent", None),
     )
     agent_id = runtime["agentId"]
-    branch = getattr(args, "branch", None) or detect_git_branch(cwd=config.workspace_root)
+    branch = getattr(args, "branch", None) or detect_git_branch(cwd=config.workspace_root, env=config.env)
     repo = getattr(args, "repo", None) or config.repository or runtime["repository"]
     ttl_seconds = parse_ttl_seconds(getattr(args, "ttl", None))
     reason = getattr(args, "reason", None)
@@ -180,6 +181,7 @@ def handle_release(
     """Release active scope claims held by this agent (or by lease ID / --all)."""
     runtime = detect_runtime_context(
         cwd=config.workspace_root,
+        env=config.env,
         explicit_agent=getattr(args, "agent", None),
     )
     agent_id = runtime["agentId"]

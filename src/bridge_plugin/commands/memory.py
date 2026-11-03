@@ -1,7 +1,8 @@
-"""Working-memory Scratchpad (read/write) and Turn Handoff commands."""
+"""Working-memory Scratchpad (read/write), Company Memory (list/pin), and Turn Handoff commands."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ..client import BridgeClient
@@ -65,7 +66,11 @@ def handle_scratchpad_write(
 ) -> int:
     """Upsert a working-memory scratchpad note in /api/v1/fleet/scratchpad with offline spooling."""
     topic = str(getattr(args, "topic", "") or "").strip()
-    body_text = resolve_stdin_or_arg(getattr(args, "body", None), stdin_stream=stdin_stream)
+    file_arg = getattr(args, "file", None)
+    if file_arg:
+        body_text = Path(file_arg).read_text(encoding="utf-8").strip()
+    else:
+        body_text = resolve_stdin_or_arg(getattr(args, "body", None), stdin_stream=stdin_stream)
     if not topic or not body_text:
         emit_output(
             {
@@ -233,3 +238,130 @@ def handle_handoff(
     )
     emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
     return seam_resp.exit_code
+
+
+def handle_memory_list(
+    _args: Any,
+    _config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """List workspace Company Memory pins, automations, and scopes from GET /api/v1/ingest/topology."""
+    resp = client.request("GET", "/api/v1/ingest/topology")
+    pins = resp.data.get("pins", []) if isinstance(resp.data.get("pins"), list) else []
+    rows = [
+        [
+            p.get("id", ""),
+            p.get("provider", "custom"),
+            p.get("resourceType", "DOC"),
+            (p.get("title") or "")[:44],
+            (p.get("url") or "")[:44],
+        ]
+        for p in pins
+        if isinstance(p, dict)
+    ]
+    table = format_table(["ID", "PROVIDER", "TYPE", "TITLE", "URL"], rows)
+    emit_output(resp.data, table, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
+
+def handle_memory_pin(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdin_stream: Any = None,
+    stdout_stream: Any = None,
+) -> int:
+    """Upsert a rich Markdown Pin & KnowledgeChunk in Company Memory via POST /api/v1/ingest/topology."""
+    title = str(getattr(args, "title", "") or "").strip()
+    if not title:
+        emit_output(
+            {"ok": False, "error": "TITLE_REQUIRED", "message": "Pin title is required."},
+            "Error: Pin title is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    file_arg = getattr(args, "file", None)
+    if file_arg:
+        body_markdown = Path(file_arg).read_text(encoding="utf-8").strip()
+    else:
+        body_markdown = resolve_stdin_or_arg(getattr(args, "body", None), stdin_stream=stdin_stream) or ""
+
+    provider = str(getattr(args, "provider", None) or "bridge").strip().lower()
+    resource_type = str(getattr(args, "resource_type", None) or "PLAYBOOK").strip().upper()
+    pillar = str(getattr(args, "pillar", None) or "PROCEDURAL_GUARDRAIL").strip().upper()
+    slug = title.lower().replace(" ", "-").replace("/", "-")[:48]
+    url = str(getattr(args, "url", None) or f"https://bridge.xray.tech/knowledge#{slug}").strip()
+
+    pin_entry: dict[str, Any] = {
+        "title": title,
+        "url": url,
+        "provider": provider,
+        "resourceType": resource_type,
+        "bodyMarkdown": body_markdown,
+        "previewMeta": {
+            "pillar": pillar,
+            "bodyMarkdown": body_markdown,
+        },
+    }
+
+    payload_body: dict[str, Any] = {
+        "pins": [pin_entry],
+    }
+    if body_markdown:
+        payload_body["chunks"] = [
+            {
+                "pillar": pillar,
+                "sourceType": resource_type,
+                "sourceId": f"pin:{provider}:{slug}",
+                "title": title,
+                "content": body_markdown,
+                "citations": [{"provider": provider, "url": url}],
+            }
+        ]
+    if config.organization_id:
+        payload_body["organizationId"] = config.organization_id
+
+    branch = detect_git_branch(cwd=config.workspace_root, env=config.env)
+    commit_sha = detect_git_commit_sha(cwd=config.workspace_root, env=config.env)
+    repo = config.repository or "workspace-repo"
+    idempotency_key = compute_idempotency_key(
+        org_id=config.organization_id or "",
+        repo=repo,
+        branch=branch,
+        commit_sha=commit_sha,
+        tag=f"MEMORY_PIN:{provider}:{url}",
+        summary=f"{title}:{body_markdown[:120]}",
+    )
+
+    resp = client.request(
+        "POST",
+        "/api/v1/ingest/topology",
+        json_body=payload_body,
+        idempotency_key=idempotency_key,
+        spool_on_offline=True,
+    )
+    out = {
+        **resp.data,
+        "title": title,
+        "url": url,
+        "provider": provider,
+        "pillar": pillar,
+        "idempotencyKey": idempotency_key,
+    }
+    human = (
+        f"[SPOOLED] Queued Company Memory pin '{title}' ({provider})."
+        if resp.spooled
+        else f"Pinned '{title}' ({provider} · {pillar}) to Bridge Company Memory."
+        if resp.ok
+        else f"Error pinning to Company Memory: {resp.error}"
+    )
+    emit_output(out, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+

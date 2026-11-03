@@ -109,6 +109,24 @@ def test_runtime_fingerprinting_agents_and_ci(tmp_path: Path) -> None:
     assert ctx_gha["repository"] == "acme/platform"
     assert ctx_gha["gitBranch"] == "feat/pkce"
 
+    # Key label resolution when no harness env var is set
+    import base64
+
+    claims_b64 = (
+        base64.urlsafe_b64encode(
+            json.dumps({"organizationId": "org_xray_tech", "label": "macbook-pro"}).encode("utf-8")
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    named_key = f"xrkey_v1.{claims_b64}.sig"
+    ctx_key_label = detect_runtime_context(
+        cwd=tmp_path,
+        env={"BRIDGE_API_KEY": named_key, "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "no-creds.json")},
+    )
+    assert ctx_key_label["agentId"] == "macbook-pro"
+    assert ctx_key_label["keyLabel"] == "macbook-pro"
+
 
 def test_idempotency_key_determinism() -> None:
     key1 = compute_idempotency_key("org_1", "acme/web", "main", "abc1234", "win", "Shipped OAuth")

@@ -36,6 +36,7 @@ from .commands.seam import (
 from .commands.tasks import (
     handle_jobs_claim,
     handle_jobs_complete,
+    handle_jobs_dispatch,
     handle_jobs_list,
     handle_tasks_verify,
 )
@@ -206,11 +207,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_job",
-        "description": "List, claim, or complete dispatched Bridge agent jobs.",
+        "description": "List, dispatch, claim, or complete Bridge agent jobs.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "claim", "complete"], "default": "list"},
+                "action": {"type": "string", "enum": ["list", "dispatch", "claim", "complete"], "default": "list"},
                 "job_id": {"type": "string"},
                 "globs": {"type": "string"},
                 "pr_url": {"type": "string"},
@@ -565,7 +566,20 @@ def call_mcp_tool_handler(
 
     elif name == "bridge_job":
         action = str(args_dict.get("action") or "list").lower()
-        if action == "claim":
+        if action == "dispatch":
+            ns = argparse.Namespace(
+                title=args_dict.get("title") or args_dict.get("job_id") or "Agent Job",
+                prompt=args_dict.get("prompt") or args_dict.get("notes"),
+                prompt_file=args_dict.get("prompt_file"),
+                task=args_dict.get("task_id"),
+                globs=args_dict.get("globs") or "src/**",
+                repo=args_dict.get("repo"),
+                branch=args_dict.get("branch"),
+                verify_cmd=args_dict.get("verify_cmd"),
+                ttl_hours=args_dict.get("ttl_hours", 4),
+            )
+            code = handle_jobs_dispatch(ns, config, client, force_json=True, stdout_stream=buf)
+        elif action == "claim":
             ns = argparse.Namespace(
                 job_id=args_dict.get("job_id") or "",
                 globs=args_dict.get("globs") or "src/**",

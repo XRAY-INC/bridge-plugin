@@ -1,0 +1,6 @@
+{
+  "organizationId": "org_xray_tech",
+  "repository": "XRAY-INC/bridge-plugin",
+  "apiUrl": "https://bridge.xray.tech",
+  "apiKeyEnv": "BRIDGE_API_KEY"
+}

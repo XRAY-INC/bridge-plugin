@@ -37,6 +37,8 @@ from .commands.decide import (
 )
 from .commands.memory import (
     handle_handoff,
+    handle_memory_list,
+    handle_memory_pin,
     handle_scratchpad_read,
     handle_scratchpad_write,
 )
@@ -50,7 +52,9 @@ from .commands.seam import (
 from .commands.tasks import (
     handle_jobs_claim,
     handle_jobs_complete,
+    handle_jobs_dispatch,
     handle_jobs_list,
+    handle_tasks_create,
     handle_tasks_list,
     handle_tasks_start,
     handle_tasks_verify,
@@ -229,12 +233,29 @@ def build_parser() -> argparse.ArgumentParser:
     dec_chk_p.add_argument("--json", action="store_true", default=False)
 
     # 4. Tasks & Agent Jobs
-    tasks_parser = subparsers.add_parser("tasks", help="List, start (issue-driven branching), or verify tasks.")
+    tasks_parser = subparsers.add_parser("tasks", help="List, create, start (issue-driven branching), or verify tasks.")
     tasks_sub = tasks_parser.add_subparsers(dest="tasks_action")
 
     t_list_p = tasks_sub.add_parser("list", help="List workspace tasks.")
     t_list_p.add_argument("--status", help="Filter by status (TODO, IN_PROGRESS, BLOCKED_ON_DECISION, DONE).")
     t_list_p.add_argument("--json", action="store_true", default=False)
+
+    t_create_p = tasks_sub.add_parser("create", help="Create a new WorkspaceTask in Bridge.")
+    t_create_p.add_argument("title", nargs="?", help="Task title (or --title / '-' for stdin).")
+    t_create_p.add_argument("--title", dest="title_flag", help="Explicit task title flag.")
+    t_create_p.add_argument("--description", default="", help="Task description.")
+    t_create_p.add_argument(
+        "--source",
+        "--provider",
+        dest="source",
+        default="NATIVE",
+        help="External source (NATIVE, GITHUB_ISSUES, LINEAR, JIRA, ASANA, MONDAY, NOTION).",
+    )
+    t_create_p.add_argument("--external-id", help="Optional external tracker ID.")
+    t_create_p.add_argument("--external-url", help="Optional external tracker URL.")
+    t_create_p.add_argument("--tier", default="UNVERIFIED", help="Initial verification tier.")
+    t_create_p.add_argument("--proof", help="Optional verification proof note.")
+    t_create_p.add_argument("--json", action="store_true", default=False)
 
     t_start_p = tasks_sub.add_parser("start", help="Checkout feat/<taskId>-<slug> and bind branch -> taskId in .bridge/state.json.")
     t_start_p.add_argument("task_id", help="Task ID.")
@@ -252,13 +273,24 @@ def build_parser() -> argparse.ArgumentParser:
     t_verify_p.add_argument("--confidence", type=int, default=90, help="Confidence (1-100).")
     t_verify_p.add_argument("--json", action="store_true", default=False)
 
-    jobs_parser = subparsers.add_parser("jobs", help="List, claim, or complete dispatched agent jobs.")
+    jobs_parser = subparsers.add_parser("jobs", help="List, dispatch, claim, or complete dispatched agent jobs.")
     jobs_sub = jobs_parser.add_subparsers(dest="jobs_action")
 
     j_list_p = jobs_sub.add_parser("list", help="List agent jobs.")
     j_list_p.add_argument("--status", help="Filter by status (QUEUED, CLAIMED, COMPLETED, BLOCKED_ON_DECISION).")
     j_list_p.add_argument("--task", help="Filter by task ID.")
     j_list_p.add_argument("--json", action="store_true", default=False)
+
+    j_disp_p = jobs_sub.add_parser("dispatch", help="Create a ContextCapsule and dispatch a queued AgentJob.")
+    j_disp_p.add_argument("task_id", nargs="?", help="Task ID (or --task / bound branch taskId).")
+    j_disp_p.add_argument("--task", dest="task_flag", help="Explicit task ID flag.")
+    j_disp_p.add_argument("--goal", "--prompt", dest="goal", help="Capsule goal summary.")
+    j_disp_p.add_argument("--capsule", help="Existing ContextCapsule ID (if already created).")
+    j_disp_p.add_argument("--frozen-globs", "--globs", dest="frozen_globs", default="prisma/migrations/**", help="Comma-separated frozen file globs.")
+    j_disp_p.add_argument("--verify-cmd", default="npm test", help="Verification command for the capsule.")
+    j_disp_p.add_argument("--harness", default="afk", help="Target agent harness (afk, claude-code, cursor, antigravity, codex).")
+    j_disp_p.add_argument("--markdown", help="Optional compiled markdown override.")
+    j_disp_p.add_argument("--json", action="store_true", default=False)
 
     j_claim_p = jobs_sub.add_parser("claim", help="Atomically claim a dispatched agent job (exits 2 on 409 conflict).")
     j_claim_p.add_argument("job_id", help="Job ID.")
@@ -325,10 +357,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_write = sp_sub.add_parser("write", help="Upsert a working-memory scratchpad note.")
     sp_write.add_argument("topic", help="Note topic.")
-    sp_write.add_argument("body", help="Markdown body (or '-' for stdin).")
+    sp_write.add_argument("body", nargs="?", help="Markdown body (or '-' for stdin, or use --file).")
+    sp_write.add_argument("--file", help="Read markdown body from file path (avoids shell backtick expansion).")
     sp_write.add_argument("--repo", help="Repository override.")
     sp_write.add_argument("--branch", help="Branch override.")
     sp_write.add_argument("--json", action="store_true", default=False)
+
+    mem_parser = subparsers.add_parser("memory", help="List or pin playbooks, setup guides, and topology chunks into Company Memory (/knowledge).")
+    mem_sub = mem_parser.add_subparsers(dest="memory_action")
+
+    mem_list = mem_sub.add_parser("list", help="List Company Memory pins, automations, and source scopes.")
+    mem_list.add_argument("--json", action="store_true", default=False)
+
+    mem_pin = mem_sub.add_parser("pin", help="Publish a rich Markdown guide/playbook and KnowledgeChunk to Company Memory (/knowledge).")
+    mem_pin.add_argument("title", help="Resource / playbook title.")
+    mem_pin.add_argument("body", nargs="?", help="Markdown body (or '-' for stdin, or use --file).")
+    mem_pin.add_argument("--body", dest="body_flag", help="Explicit markdown body flag.")
+    mem_pin.add_argument("--file", help="Read markdown body from file path.")
+    mem_pin.add_argument("--url", help="Canonical deep-link URL.")
+    mem_pin.add_argument("--provider", default="bridge", help="Connector/provider slug (e.g. github, linear, zoom).")
+    mem_pin.add_argument("--type", dest="resource_type", default="PLAYBOOK", help="Resource type (PLAYBOOK, RUNBOOK, DOC, SCHEMA).")
+    mem_pin.add_argument(
+        "--pillar",
+        default="PROCEDURAL_GUARDRAIL",
+        choices=["UNSTRUCTURED_EPISODIC", "STRUCTURED_TOPOLOGY", "PROCEDURAL_GUARDRAIL"],
+        help="Knowledge Graph pillar.",
+    )
+    mem_pin.add_argument("--json", action="store_true", default=False)
 
     handoff_p = subparsers.add_parser("handoff", help="Log a turn-closure HANDOFF seam and update scratchpad.")
     handoff_p.add_argument("summary", help="Handoff summary (or '-' for stdin).")
@@ -473,6 +528,17 @@ def run_cli(
         sub = getattr(args, "tasks_action", "list")
         if sub == "list":
             return handle_tasks_list(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub == "create":
+            if getattr(args, "title_flag", None) and not getattr(args, "title", None):
+                args.title = args.title_flag
+            return handle_tasks_create(
+                args,
+                config,
+                client,
+                force_json=force_json,
+                stdin_stream=stdin_stream,
+                stdout_stream=stdout_stream,
+            )
         if sub == "start":
             return handle_tasks_start(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "verify":
@@ -489,6 +555,10 @@ def run_cli(
         sub = getattr(args, "jobs_action", "list")
         if sub == "list":
             return handle_jobs_list(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub == "dispatch":
+            if getattr(args, "task_flag", None) and not getattr(args, "task_id", None):
+                args.task_id = args.task_flag
+            return handle_jobs_dispatch(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "claim":
             return handle_jobs_claim(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "complete":
@@ -518,6 +588,21 @@ def run_cli(
                 stdout_stream=stdout_stream,
             )
         return handle_scratchpad_read(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+
+    if cmd == "memory":
+        sub = getattr(args, "memory_action", "list")
+        if sub == "pin":
+            if getattr(args, "body_flag", None) and not getattr(args, "body", None):
+                args.body = args.body_flag
+            return handle_memory_pin(
+                args,
+                config,
+                client,
+                force_json=force_json,
+                stdin_stream=stdin_stream,
+                stdout_stream=stdout_stream,
+            )
+        return handle_memory_list(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd == "handoff":
         return handle_handoff(

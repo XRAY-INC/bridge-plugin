@@ -230,18 +230,88 @@ def detect_git_commit_sha(
     return sha if sha else None
 
 
+def _extract_key_label(api_key: str | None) -> str | None:
+    """Extract the custom key name/label from an xrkey_v1 token if present."""
+    parts = (api_key or "").strip().split(".")
+    if len(parts) < 2 or parts[0] != "xrkey_v1":
+        return None
+    try:
+        import base64
+
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+        if isinstance(claims, dict):
+            label = claims.get("label")
+            if isinstance(label, str) and label.strip() and label.strip() not in ("bridge-cli", "xray-dispatch"):
+                return label.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_api_key_label(
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve the active API key's custom label from env, project config, or user credentials."""
+    environ = env if env is not None else os.environ
+    for env_name in ("BRIDGE_API_KEY", "WORKSPACE_API_KEY", "XRAY_DISPATCH_API_KEY"):
+        val = environ.get(env_name, "").strip()
+        if val:
+            return _extract_key_label(val)
+
+    work_dir = (cwd or Path.cwd()).resolve()
+    for directory in (work_dir, *work_dir.parents):
+        for filename in (".bridge.json", ".workspace-project.json", ".xray-dispatch.json"):
+            candidate = directory / filename
+            if candidate.is_file():
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and isinstance(data.get("apiKey"), str):
+                        label = _extract_key_label(data["apiKey"])
+                        if label:
+                            return label
+                except Exception:
+                    pass
+        if (directory / ".git").exists():
+            break
+
+    override = environ.get("BRIDGE_CREDENTIALS_PATH", "").strip()
+    xdg = environ.get("XDG_CONFIG_HOME", "").strip()
+    if override:
+        cred_path: Path | None = Path(override)
+    elif xdg:
+        cred_path = Path(xdg) / "bridge" / "credentials.json"
+    elif env is None or env is os.environ:
+        cred_path = Path.home() / ".config" / "bridge" / "credentials.json"
+    else:
+        cred_path = None
+
+    if cred_path and cred_path.is_file():
+        try:
+            creds = json.loads(cred_path.read_text(encoding="utf-8"))
+            if isinstance(creds, dict) and isinstance(creds.get("apiKey"), str):
+                return _extract_key_label(creds["apiKey"])
+        except Exception:
+            pass
+    return None
+
+
 def detect_runtime_context(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
     explicit_agent: str | None = None,
 ) -> dict[str, Any]:
-    """Auto-fingerprint AI coding agent harness and CI runner environment."""
+    """Auto-fingerprint AI coding agent harness, custom API key name, and CI runner environment."""
     environ = env if env is not None else os.environ
+    key_label = _resolve_api_key_label(cwd=cwd, env=environ)
 
-    # 1. Detect AI Agent Harness
+    # 1. Detect AI Agent / Key Identity
     agent_id = (explicit_agent or environ.get("BRIDGE_AGENT_ID") or "").strip()
     if not agent_id:
-        if environ.get("CLAUDECODE") == "1" or environ.get("CLAUDE_CODE_ENTRYPOINT"):
+        if key_label:
+            agent_id = key_label
+        elif environ.get("CLAUDECODE") == "1" or environ.get("CLAUDE_CODE_ENTRYPOINT"):
             agent_id = "claude-code"
         elif environ.get("CURSOR_TRACE_ID") or environ.get("CURSOR_SESSION_ID"):
             agent_id = "cursor"
@@ -302,6 +372,7 @@ def detect_runtime_context(
 
     return {
         "agentId": agent_id,
+        "keyLabel": key_label,
         "modelName": model_name,
         "repository": repo,
         "gitBranch": branch,

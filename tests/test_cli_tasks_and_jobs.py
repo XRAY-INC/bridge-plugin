@@ -158,3 +158,125 @@ def test_jobs_claim_conflict_and_complete(tmp_path: Path) -> None:
     )
     assert code_complete == EXIT_OK
     assert json.loads(out_complete.getvalue())["action"] == "complete"
+
+
+def test_tasks_create_jobs_dispatch_and_memory_pin(tmp_path: Path) -> None:
+    """Verify `bridge tasks create`, `bridge jobs dispatch`, and `bridge memory pin`."""
+    env = _setup_env(tmp_path)
+    captured_requests: list[tuple[str, str, dict[str, Any]]] = []
+
+    def mock_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        body = json.loads(req.data.decode("utf-8")) if req.data else {}
+        captured_requests.append((req.get_method(), req.full_url, body))
+        if "/api/v1/tasks" in req.full_url and req.get_method() == "POST":
+            return 201, json.dumps(
+                {
+                    "ok": True,
+                    "task": {
+                        "id": "task_wave_4",
+                        "title": body.get("title"),
+                        "status": body.get("status", "TODO"),
+                    },
+                }
+            ).encode("utf-8")
+        if "/api/v1/fleet/capsules" in req.full_url and req.get_method() == "POST":
+            return 201, json.dumps(
+                {
+                    "ok": True,
+                    "capsule": {"id": "cap_wave_4", "title": body.get("title")},
+                }
+            ).encode("utf-8")
+        if "/api/v1/fleet/jobs" in req.full_url and req.get_method() == "POST":
+            return 201, json.dumps(
+                {
+                    "ok": True,
+                    "job": {
+                        "id": "job_wave_4",
+                        "taskId": body.get("taskId"),
+                        "capsuleId": body.get("capsuleId"),
+                        "status": "QUEUED",
+                    },
+                }
+            ).encode("utf-8")
+        if "/api/v1/ingest/topology" in req.full_url and req.get_method() == "POST":
+            return 200, json.dumps(
+                {
+                    "ok": True,
+                    "upsertedPinCount": len(body.get("pins", [])),
+                    "upsertedChunkCount": len(body.get("chunks", [])),
+                    "pins": body.get("pins", []),
+                }
+            ).encode("utf-8")
+        return 200, json.dumps({"ok": True}).encode("utf-8")
+
+    # 1. Create task
+    out_create = NonTTYBuffer()
+    code_create = run_cli(
+        [
+            "tasks",
+            "create",
+            "Wave 4: Zapier, Make.com & n8n Automation Connectors",
+            "--description",
+            "Audit developer platform docs and ship setup guides",
+            "--provider",
+            "bridge_cli",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_create,
+        transport=mock_transport,
+    )
+    assert code_create == EXIT_OK
+    created_data = json.loads(out_create.getvalue())
+    assert created_data["task"]["id"] == "task_wave_4"
+
+    # 2. Dispatch job
+    out_dispatch = NonTTYBuffer()
+    code_dispatch = run_cli(
+        [
+            "jobs",
+            "dispatch",
+            "Audit Zapier, Make.com, and n8n",
+            "--prompt",
+            "Verify OAuth2 vs API Key (xrkey_v1) and REST Hook triggers",
+            "--task",
+            "task_wave_4",
+            "--globs",
+            "src/lib/workspace/*,src/components/cockpit/*",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_dispatch,
+        transport=mock_transport,
+    )
+    assert code_dispatch == EXIT_OK
+    dispatched_data = json.loads(out_dispatch.getvalue())
+    assert dispatched_data["job"]["id"] == "job_wave_4"
+    assert dispatched_data["contextCapsuleId"] == "cap_wave_4"
+
+    # 3. Pin guide from file into Company Memory
+    guide_file = tmp_path / "zapier-make-n8n-guide.md"
+    guide_file.write_text("# Zapier, Make.com & n8n Setup Guide\nStep 1: Generate xrkey_v1 API key.", encoding="utf-8")
+    out_pin = NonTTYBuffer()
+    code_pin = run_cli(
+        [
+            "memory",
+            "pin",
+            "Zapier, Make.com & n8n Setup Guide",
+            "--url",
+            "https://bridge.xray.tech/integrations#automation",
+            "--provider",
+            "zapier",
+            "--file",
+            str(guide_file),
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_pin,
+        transport=mock_transport,
+    )
+    assert code_pin == EXIT_OK
+    pin_data = json.loads(out_pin.getvalue())
+    assert pin_data["upsertedPinCount"] == 1
+    assert pin_data["upsertedChunkCount"] == 1
+

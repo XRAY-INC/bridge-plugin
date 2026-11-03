@@ -77,6 +77,13 @@ class BridgeConfig:
         return f"{k[:14]}...{k[-4:]}"
 
     @property
+    def key_label(self) -> str | None:
+        label = decode_api_key_claims(self.api_key).get("label")
+        if isinstance(label, str) and label.strip() and label.strip() != "xray-dispatch":
+            return label.strip()
+        return None
+
+    @property
     def bridge_dir(self) -> Path:
         return self.workspace_root / ".bridge"
 

@@ -125,11 +125,13 @@ def handle_auth_login(
             env={"BRIDGE_CREDENTIALS_PATH": str(config.credentials_path)},
         )
     key_hint = f"{api_key[:14]}...{api_key[-4:]}" if len(api_key) > 18 else f"{api_key[:4]}..."
+    key_label = decode_api_key_claims(api_key).get("label")
     payload = {
         "ok": True,
         "authenticated": True,
         "verified": check.ok,
         "keyHint": key_hint,
+        "keyLabel": key_label if isinstance(key_label, str) and key_label.strip() else None,
         "organizationId": org_id,
         "apiUrl": api_url,
         "credentialsPath": str(cred_path),
@@ -139,6 +141,11 @@ def handle_auth_login(
         [
             f"Authenticated with Bridge ({api_url})",
             f"  Key Hint        : {key_hint}",
+            *(
+                [f"  Key Name        : {payload['keyLabel']}"]
+                if payload["keyLabel"]
+                else []
+            ),
             f"  Organization ID : {org_id or '(unknown)'}",
             f"  Saved To        : {cred_path}",
             *(
@@ -162,7 +169,7 @@ def handle_auth_whoami(
     stdout_stream: Any = None,
 ) -> int:
     """Display active Bridge authentication and verify against /api/v1/fleet/api-keys when online."""
-    runtime = detect_runtime_context(cwd=config.workspace_root)
+    runtime = detect_runtime_context(cwd=config.workspace_root, env=config.env)
     if not config.is_authenticated and not config.is_bound:
         emit_output(
             {
@@ -206,19 +213,21 @@ def handle_auth_whoami(
             )
             return EXIT_AUTH_MISSING if rejected else EXIT_ERROR
 
+    effective_agent = config.key_label if runtime["agentId"] == "bridge-cli" and config.key_label else runtime["agentId"]
     payload = {
         "ok": True,
         "authenticated": config.is_authenticated,
         "verified": verified,
         "authSource": config.auth_source,
         "keyHint": config.key_hint,
+        "keyLabel": config.key_label,
         "organizationId": verify_data.get("organizationId")
         or config.organization_id
         or decode_api_key_claims(config.api_key).get("organizationId"),
         "apiUrl": config.api_url,
         "repository": config.repository,
         "userEmail": config.user_email,
-        "agentId": runtime["agentId"],
+        "agentId": effective_agent,
         "configPath": str(config.config_path) if config.config_path else None,
     }
     emit_output(
@@ -228,10 +237,15 @@ def handle_auth_whoami(
             f"  Authenticated   : {'yes' if config.is_authenticated else 'no (project-bound only)'}",
             f"  Auth Source     : {config.auth_source}",
             f"  Key Hint        : {config.key_hint or '(none)'}",
+            *(
+                [f"  Key Name        : {config.key_label}"]
+                if config.key_label
+                else []
+            ),
             f"  Organization ID : {payload['organizationId'] or '(unset)'}",
             f"  API URL         : {config.api_url}",
             f"  Repository      : {config.repository}",
-            f"  Agent Runtime   : {runtime['agentId']}",
+            f"  Agent / Key     : {effective_agent}",
         ],
         force_json=force_json,
         stdout_stream=stdout_stream,
@@ -366,8 +380,8 @@ def handle_status(
         )
         return EXIT_AUTH_MISSING
 
-    runtime = detect_runtime_context(cwd=config.workspace_root)
-    branch = detect_git_branch(cwd=config.workspace_root)
+    runtime = detect_runtime_context(cwd=config.workspace_root, env=config.env)
+    branch = detect_git_branch(cwd=config.workspace_root, env=config.env)
     branch_state = get_branch_state(config, branch=branch)
     local_claims = load_local_claims(config)
     spooled_items = client.read_spool()
@@ -381,6 +395,7 @@ def handle_status(
         "authenticated": config.is_authenticated,
         "authSource": config.auth_source,
         "keyHint": config.key_hint,
+        "keyLabel": config.key_label,
         "configPath": str(config.config_path) if config.config_path else None,
         "gitBranch": branch,
         "commitSha": runtime["commitSha"],
@@ -398,10 +413,15 @@ def handle_status(
         f"  Repository   : {config.repository}",
         f"  API URL      : {config.api_url}",
         f"  Auth         : {config.auth_source} ({config.key_hint or 'unauthenticated'})",
+        *(
+            [f"  Key Name     : {config.key_label}"]
+            if config.key_label
+            else []
+        ),
         f"  Branch       : {branch} ({(runtime['commitSha'] or 'no-commit')[:7]})",
         f"  Bound Task   : {branch_state.get('taskId') or '(none)'}",
         f"  Bound Job    : {branch_state.get('jobId') or '(none)'}",
-        f"  Agent / CI   : {runtime['agentId']}"
+        f"  Agent / Key  : {runtime['agentId']}"
         + (f" [{runtime['ci']['provider']}]" if runtime["ci"]["provider"] else ""),
         f"  Scope Claims : {len(local_claims)} active",
         f"  Offline Spool: {len(spooled_items)} queued",
