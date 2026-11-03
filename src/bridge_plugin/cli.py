@@ -438,8 +438,26 @@ def run_cli(
     args_list = list(argv) if argv is not None else sys.argv[1:]
     force_json = "--json" in args_list
 
-    # Strip --json from subparser collisions while keeping it on parsed namespace
-    cleaned_args = [a for a in args_list if a != "--json"]
+    # Strip --json and hoist --org from subparser positions while keeping them on parsed namespace
+    explicit_org: str | None = None
+    cleaned_args: list[str] = []
+    idx = 0
+    while idx < len(args_list):
+        token = args_list[idx]
+        if token == "--json":
+            idx += 1
+            continue
+        if token == "--org" and idx + 1 < len(args_list):
+            explicit_org = args_list[idx + 1]
+            idx += 2
+            continue
+        if token.startswith("--org="):
+            explicit_org = token.split("=", 1)[1]
+            idx += 1
+            continue
+        cleaned_args.append(token)
+        idx += 1
+
     if not cleaned_args:
         parser.print_help(file=stdout_stream or sys.stdout)
         return EXIT_ERROR
@@ -450,6 +468,8 @@ def run_cli(
         return int(exc.code) if isinstance(exc.code, int) else EXIT_ERROR
 
     args.json = force_json
+    if explicit_org is not None:
+        args.org = explicit_org
 
     config = resolve_config(
         cwd=cwd,

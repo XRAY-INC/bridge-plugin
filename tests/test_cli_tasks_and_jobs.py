@@ -335,4 +335,49 @@ def test_tasks_capsule_single_and_compile_all(tmp_path: Path) -> None:
     all_payload = json.loads(out_all.getvalue())
     assert all_payload["compiledCount"] == 2
 
+    # Verify trailing --org flag on subcommands (`brg context --org org_override` and `brg tasks capsule <id> --org=org_override`)
+    captured_orgs: list[str] = []
+
+    def org_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        if "/api/v1/fleet/context" in req.full_url:
+            captured_orgs.append(req.full_url)
+            return 200, json.dumps(
+                {
+                    "ok": True,
+                    "organizationId": "org_override",
+                    "alignment": {"status": "GREEN", "badge": "🟢 Green", "reasons": []},
+                    "tasks": [],
+                }
+            ).encode("utf-8")
+        body = json.loads(req.data.decode("utf-8")) if req.data else {}
+        captured_orgs.append(str(body.get("organizationId") or ""))
+        return 201, json.dumps(
+            {
+                "ok": True,
+                "capsule": {"id": "cap_org", "taskId": body.get("taskId"), "version": 1},
+            }
+        ).encode("utf-8")
+
+    out_ctx = NonTTYBuffer()
+    code_ctx = run_cli(
+        ["context", "--org", "org_override"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_ctx,
+        transport=org_transport,
+    )
+    assert code_ctx == EXIT_OK
+    assert any("org_override" in u for u in captured_orgs)
+
+    out_cap_org = NonTTYBuffer()
+    code_cap_org = run_cli(
+        ["tasks", "capsule", "task_abc", "--org=org_override_eq"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_cap_org,
+        transport=org_transport,
+    )
+    assert code_cap_org == EXIT_OK
+    assert "org_override_eq" in captured_orgs
+
 

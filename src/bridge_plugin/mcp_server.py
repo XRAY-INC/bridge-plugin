@@ -38,6 +38,7 @@ from .commands.tasks import (
     handle_jobs_complete,
     handle_jobs_dispatch,
     handle_jobs_list,
+    handle_tasks_capsule,
     handle_tasks_verify,
 )
 from .config import (
@@ -207,12 +208,13 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_job",
-        "description": "List, dispatch, claim, or complete Bridge agent jobs.",
+        "description": "List, dispatch, claim, complete, or compile capsules for Bridge agent jobs.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "dispatch", "claim", "complete"], "default": "list"},
+                "action": {"type": "string", "enum": ["list", "dispatch", "claim", "complete", "capsule"], "default": "list"},
                 "job_id": {"type": "string"},
+                "task_id": {"type": "string"},
                 "globs": {"type": "string"},
                 "pr_url": {"type": "string"},
                 "commit_sha": {"type": "string"},
@@ -568,17 +570,23 @@ def call_mcp_tool_handler(
         action = str(args_dict.get("action") or "list").lower()
         if action == "dispatch":
             ns = argparse.Namespace(
-                title=args_dict.get("title") or args_dict.get("job_id") or "Agent Job",
-                prompt=args_dict.get("prompt") or args_dict.get("notes"),
-                prompt_file=args_dict.get("prompt_file"),
-                task=args_dict.get("task_id"),
-                globs=args_dict.get("globs") or "src/**",
-                repo=args_dict.get("repo"),
-                branch=args_dict.get("branch"),
-                verify_cmd=args_dict.get("verify_cmd"),
-                ttl_hours=args_dict.get("ttl_hours", 4),
+                task_id=args_dict.get("task_id") or args_dict.get("job_id"),
+                goal=args_dict.get("prompt") or args_dict.get("notes") or args_dict.get("title"),
+                capsule=args_dict.get("capsule_id"),
+                frozen_globs=args_dict.get("globs") or "prisma/migrations/**",
+                verify_cmd=args_dict.get("verify_cmd") or "npm test",
+                harness=args_dict.get("harness") or "afk",
+                markdown=args_dict.get("markdown"),
             )
             code = handle_jobs_dispatch(ns, config, client, force_json=True, stdout_stream=buf)
+        elif action == "capsule":
+            ns = argparse.Namespace(
+                task_id=args_dict.get("task_id") or args_dict.get("job_id"),
+                compile_all=bool(args_dict.get("compile_all", False)),
+                frozen_globs=args_dict.get("globs"),
+                verify_cmd=args_dict.get("verify_cmd"),
+            )
+            code = handle_tasks_capsule(ns, config, client, force_json=True, stdout_stream=buf)
         elif action == "claim":
             ns = argparse.Namespace(
                 job_id=args_dict.get("job_id") or "",
