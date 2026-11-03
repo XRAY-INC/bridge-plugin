@@ -155,7 +155,7 @@ def _format_context_human(payload: dict[str, Any]) -> list[str]:
                 f"  - [{task.get('status', 'TODO')} | {rail_label}] {task.get('id')}: {task.get('title')}{cite_str}"
             )
             if quote:
-                prefix = f"{speaker}: " if speaker else ""
+                prefix = f"{speaker}: " if speaker and not str(quote).startswith(f"{speaker}:") else ""
                 lines.append(f"      \"{prefix}{quote}\"")
 
     leases = payload.get("activeLeases") or payload.get("leases") or []
@@ -170,8 +170,9 @@ def _format_context_human(payload: dict[str, Any]) -> list[str]:
                 f"  - {lease.get('agentId', 'agent')} on {lease.get('worktreeBranch', 'main')}: {globs}"
             )
 
-    org_brief = payload.get("orgBrief")
-    team_brief = payload.get("teamBrief")
+    briefs_obj = payload.get("briefs") if isinstance(payload.get("briefs"), dict) else {}
+    org_brief = payload.get("orgBrief") or briefs_obj.get("org") or briefs_obj.get("orgBrief")
+    team_brief = payload.get("teamBrief") or briefs_obj.get("team") or briefs_obj.get("teamBrief")
     corrections = payload.get("corrections") or []
     if org_brief or team_brief or corrections:
         lines.append("")
