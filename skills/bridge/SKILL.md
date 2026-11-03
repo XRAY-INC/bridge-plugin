@@ -53,15 +53,36 @@ brg claim "src/module/*" --ttl 30m --reason "Implementing feature X"
 ```
 
 ### Step 3 — Governance & Interstitial Seams During Execution
-- **Architectural Trade-offs (`bridge decide`):** When encountering a meaningful architectural choice or blocker requiring stakeholder sign-off, escalate a 1-Click Decision Card instead of guessing:
+- **Autonomous vs. Interactive 1-Click Decision Cards (`bridge decide propose`):**
+  - Inspect `teamRoster` from `bridge_context_pull` (`brg context`) to identify relevant workspace stakeholders (`handle` or `email`).
+  - **In Unattended / Overnight / CI / Release Runs:** Do **not** wait for manual prompting when hitting a product, UX, or architectural trade-off:
+    - **`--mode advisory` (`--advisory` / "Default-Unless-Vetoed"):** Use when a safe recommended default exists. Distributes 1-Click Magic Links (with option quick-vote buttons + Custom Counter-Proposal input) to `--to <handles-or-emails>` while allowing the run to continue with Option A unless overridden.
+    - **`--mode blocking` (Default):** Use for irreversible or destructive gates (e.g., breaking production DB migration). Pauses the bound task (`BLOCKED_ON_DECISION`, exit code `2` on `brg decide check`) until a stakeholder endorses an option.
+  - **In Interactive / Paired Sessions:** When you spot a cross-team or stakeholder trade-off, proactively offer in 1 line (*"Should I send an advisory 1-Click Decision Card (`--to <stakeholder> --mode advisory`) while we proceed with Option A?"*) or dispatch immediately when asked.
   ```bash
+  # Blocking escalation (halts task until resolved)
   brg decide propose \
     --title "Cache invalidation strategy" \
     --context "Need <50ms reads across multi-region workers" \
+    --to "sarah,ciso@acme.com" \
+    --mode blocking \
     --options "Redis PubSub,Stale-While-Revalidate CDN,Postgres LISTEN/NOTIFY" \
     --criteria "Latency:9,Operational Simplicity:8,Cost:6" \
     --urgency HIGH
+
+  # Advisory "Default-Unless-Vetoed" card for overnight / promo runs
+  brg decide propose \
+    --title "Staging Promo Cutover Window" \
+    --context "Proceeding with Option A (Immediate Cutover) unless overridden via 1-Click Magic Link" \
+    --to "sarah,ciso@acme.com" \
+    --mode advisory \
+    --options "Immediate Cutover (Recommended),Hold for Morning Review" \
+    --criteria "Release Velocity:9,Rollback Safety:8"
   ```
+- **Dual-Homed Client + Agency Workspaces (`organizationId` + `agencyOrganizationId`):**
+  - When an agency/consulting engineer works inside a Client's repository (`brg init --org <client_org> --agency-org <agency_org>`):
+    - **Client-Visible by Default (no flag):** `brg tasks ...`, `brg seam win|decision`, `brg handoff`, and `brg decide propose --to "client@acme.com"` go to the **Client's Bridge** so the client sees all engineering delivery and receives client Decision Cards (and `WIN`/`HANDOFF` seams automatically mirror a rollup copy to `agencyOrganizationId`).
+    - **Agency-Internal (`--internal` / `--agency`):** Pass `--internal` for internal agency blockers, SOW/margin questions, or internal playbooks (`brg seam friction --internal "..."`, `brg decide propose --internal --to "kate,doc" --mode advisory ...`) so internal agency friction never leaks into the Client's Bridge.
 - **Decisions, Blockers & Wins (`bridge seam`):**
   ```bash
   brg seam decision "Selected Stale-While-Revalidate with 30s TTL for public endpoints"

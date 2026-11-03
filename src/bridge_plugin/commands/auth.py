@@ -323,15 +323,30 @@ def handle_init(
         or detect_git_repo_slug(cwd=config.workspace_root)
     ).strip()
     api_url = (getattr(args, "url", None) or config.api_url or DEFAULT_API_URL).strip()
+    agency_org_id = (
+        getattr(args, "agency_org", None)
+        or config.agency_organization_id
+        or ""
+    ).strip() or None
+    if agency_org_id == org_id:
+        agency_org_id = None
 
     cfg_path = write_project_config(
         config.workspace_root,
         organization_id=org_id,
         repository=repo,
         api_url=api_url,
+        agency_organization_id=agency_org_id,
     )
     gitignore_updated = _ignore_local_state(config.workspace_root)
-    payload = {
+    auto_setup_files: list[str] = []
+    if not getattr(args, "no_setup", False):
+        root = config.workspace_root
+        for candidate_dir in (".claude", ".cursor", ".agent", ".agents"):
+            if (root / candidate_dir).is_dir():
+                _install_skill_bundle(root / candidate_dir / "skills", auto_setup_files)
+
+    payload: dict[str, Any] = {
         "ok": True,
         "plugin": "bridge",
         "gitignoreUpdated": gitignore_updated,
@@ -341,11 +356,17 @@ def handle_init(
         "apiUrl": api_url,
         "apiKeyEnv": "BRIDGE_API_KEY",
     }
+    if agency_org_id:
+        payload["agencyOrganizationId"] = agency_org_id
+    if auto_setup_files:
+        payload["skillsUpdated"] = auto_setup_files
+
     emit_output(
         payload,
         [
             f"Initialized Bridge project configuration at {cfg_path}",
             f"  Organization ID : {org_id}",
+            *([f"  Agency Home Org : {agency_org_id} (--internal routes here; WIN/HANDOFF mirror here)"] if agency_org_id else []),
             f"  Repository      : {repo}",
             f"  API URL         : {api_url}",
             *(["  Git             : Added .bridge/ to .gitignore"] if gitignore_updated else []),
@@ -390,6 +411,7 @@ def handle_status(
         "ok": True,
         "plugin": "bridge",
         "organizationId": config.organization_id,
+        "agencyOrganizationId": config.agency_organization_id,
         "repository": config.repository,
         "apiUrl": config.api_url,
         "authenticated": config.is_authenticated,
@@ -410,6 +432,11 @@ def handle_status(
     human_lines = [
         "Bridge Workspace Status",
         f"  Organization : {config.organization_id or '(from API key)'}",
+        *(
+            [f"  Agency Org   : {config.agency_organization_id} (dual-homed: use --internal for agency-only blockers/cards)"]
+            if config.agency_organization_id
+            else []
+        ),
         f"  Repository   : {config.repository}",
         f"  API URL      : {config.api_url}",
         f"  Auth         : {config.auth_source} ({config.key_hint or 'unauthenticated'})",

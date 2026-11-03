@@ -168,7 +168,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_decide",
-        "description": "List, propose, score, resolve, or check 1-Click Decisions.",
+        "description": "List, propose, score, resolve, or check 1-Click Decisions (--to recipients, blocking/advisory).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -181,6 +181,8 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "title": {"type": "string"},
                 "context": {"type": "string"},
                 "urgency": {"type": "string", "enum": ["CRITICAL", "HIGH", "STANDARD", "LOW"]},
+                "mode": {"type": "string", "enum": ["BLOCKING", "ADVISORY"]},
+                "to": {"type": "string"},
                 "options": {"type": "string"},
                 "criteria": {"type": "string"},
                 "option": {"type": "string"},
@@ -421,6 +423,9 @@ def call_mcp_tool_handler(
 ) -> dict[str, Any]:
     """Execute one of the 6 consolidated MCP tools and return an MCP CallToolResult dict."""
     args_dict = dict(arguments or {})
+    if args_dict.get("internal") or args_dict.get("agency"):
+        config = config.for_agency()
+        client = BridgeClient(config, agent_id=client.agent_id, transport=client._transport, env=config.env)
     buf = _StringBuffer()
 
     if name == "bridge_context":
@@ -500,6 +505,11 @@ def call_mcp_tool_handler(
                 urgency=args_dict.get("urgency") or "STANDARD",
                 options=args_dict.get("options"),
                 criteria=args_dict.get("criteria"),
+                to=args_dict.get("to") or args_dict.get("recipients"),
+                mode=args_dict.get("mode") or ("ADVISORY" if args_dict.get("advisory") else "BLOCKING"),
+                advisory=bool(args_dict.get("advisory", False)),
+                scores=args_dict.get("scores"),
+                flow=args_dict.get("flow") or args_dict.get("flows"),
                 task=args_dict.get("task_id"),
                 job=args_dict.get("job_id"),
             )

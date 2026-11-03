@@ -128,6 +128,50 @@ def handle_seam_log(
     if seam_obj and seam_obj.get("id"):
         record_last_seam_id(config, str(seam_obj["id"]))
 
+    # Dual-Homed Agency Rollup: When logging a WIN or HANDOFF to a Client workspace (`organizationId`),
+    # also mirror a rollup seam to the upstream Agency workspace (`agencyOrganizationId`, e.g. org_xray_tech)
+    # so internal agency Morning Briefs and All-Hands automatically track client delivery.
+    mirrored_to_agency = False
+    if (
+        resp.ok
+        and config.agency_organization_id
+        and not config.is_internal_target
+        and tag in ("WIN", "HANDOFF")
+    ):
+        try:
+            agency_cfg = config.for_agency()
+            agency_client = BridgeClient(
+                agency_cfg,
+                agent_id=runtime["agentId"],
+                transport=client._transport,
+                env=config.env,
+            )
+            agency_summary = f"[Client: {config.organization_id}] {summary}"
+            agency_idem = compute_idempotency_key(
+                org_id=agency_cfg.organization_id or "",
+                repo=repo,
+                branch=branch,
+                commit_sha=commit_sha,
+                tag=tag,
+                summary=agency_summary,
+            )
+            agency_body = {
+                **body,
+                "organizationId": agency_cfg.organization_id,
+                "summary": agency_summary,
+                "idempotencyKey": agency_idem,
+            }
+            agency_resp = agency_client.request(
+                "POST",
+                "/api/v1/fleet/seam",
+                json_body=agency_body,
+                idempotency_key=agency_idem,
+                spool_on_offline=False,
+            )
+            mirrored_to_agency = agency_resp.ok
+        except Exception:
+            mirrored_to_agency = False
+
     out_payload = {
         **resp.data,
         "tag": tag,
@@ -138,6 +182,8 @@ def handle_seam_log(
         "jobId": job_id,
         "idempotencyKey": idempotency_key,
     }
+    if mirrored_to_agency and config.agency_organization_id:
+        out_payload["mirroredToAgencyOrg"] = config.agency_organization_id
     if resp.spooled:
         human = f"[SPOOLED] {tag} ({repo}:{branch}): {summary}"
     elif resp.ok:

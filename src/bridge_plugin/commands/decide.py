@@ -75,6 +75,93 @@ def _parse_criteria_input(raw_criteria: str | None) -> list[dict[str, Any]]:
     return criteria
 
 
+def _parse_recipients_input(raw_to: str | list[Any] | None) -> list[str]:
+    if not raw_to:
+        return []
+    if isinstance(raw_to, list):
+        return [str(item).strip() for item in raw_to if str(item).strip()]
+    stripped = str(raw_to).strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except Exception:
+            pass
+    return [part.strip() for part in stripped.replace(";", ",").split(",") if part.strip()]
+
+
+def _parse_scores_input(raw_scores: str | list[Any] | None) -> list[dict[str, Any]]:
+    if not raw_scores:
+        return []
+    if isinstance(raw_scores, list):
+        return [item for item in raw_scores if isinstance(item, dict)]
+    stripped = str(raw_scores).strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        except Exception:
+            pass
+    scores: list[dict[str, Any]] = []
+    for item in stripped.split(","):
+        part = item.strip()
+        if not part:
+            continue
+        segments = part.split(":", 3)
+        if len(segments) >= 3:
+            opt_ref, crit_ref, score_str = segments[0].strip(), segments[1].strip(), segments[2].strip()
+            try:
+                score_val = max(1, min(10, int(score_str)))
+            except ValueError:
+                score_val = 5
+            entry: dict[str, Any] = {"score": score_val}
+            if opt_ref.isdigit():
+                entry["optionIndex"] = int(opt_ref)
+            else:
+                entry["optionId"] = opt_ref
+            if crit_ref.isdigit():
+                entry["criterionIndex"] = int(crit_ref)
+            else:
+                entry["criterionId"] = crit_ref
+            if len(segments) == 4 and segments[3].strip():
+                entry["rationale"] = segments[3].strip()
+            scores.append(entry)
+    return scores
+
+
+def _parse_flows_input(raw_flows: str | list[Any] | None) -> list[dict[str, Any]]:
+    if not raw_flows:
+        return []
+    if isinstance(raw_flows, list):
+        return [item for item in raw_flows if isinstance(item, dict)]
+    stripped = str(raw_flows).strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        except Exception:
+            pass
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    for idx, item in enumerate(stripped.split("|")):
+        part = item.strip()
+        if not part:
+            continue
+        segments = [s.strip() for s in part.split(":")]
+        node_id = segments[0] if len(segments) >= 2 else f"n{idx + 1}"
+        label = segments[1] if len(segments) >= 2 else segments[0]
+        kind = segments[2] if len(segments) >= 3 else ("trigger" if idx == 0 else "impact")
+        nodes.append({"id": node_id, "label": label, "kind": kind})
+        if idx > 0:
+            edges.append({"from": nodes[idx - 1]["id"], "to": node_id})
+    return [{"optionIndex": 0, "nodes": nodes, "edges": edges}] if nodes else []
+
+
 def handle_decide_list(
     args: Any,
     config: BridgeConfig,
@@ -204,6 +291,11 @@ def handle_decide_propose(
     urgency = str(getattr(args, "urgency", "STANDARD") or "STANDARD").strip().upper()
     options = _parse_options_input(getattr(args, "options", None))
     criteria = _parse_criteria_input(getattr(args, "criteria", None))
+    recipients = _parse_recipients_input(getattr(args, "to", None) or getattr(args, "recipients", None))
+    scores = _parse_scores_input(getattr(args, "scores", None))
+    flows = _parse_flows_input(getattr(args, "flow", None) or getattr(args, "flows", None))
+    raw_mode = "ADVISORY" if getattr(args, "advisory", False) else str(getattr(args, "mode", "blocking") or "blocking").strip().upper()
+    mode = "ADVISORY" if raw_mode == "ADVISORY" else "BLOCKING"
 
     idempotency_key = compute_idempotency_key(
         org_id=config.organization_id or "",
@@ -211,19 +303,27 @@ def handle_decide_propose(
         branch=branch,
         commit_sha=commit_sha,
         tag="DECIDE_PROPOSE",
-        summary=f"{title}:{context_summary}",
+        summary=f"{title}:{context_summary}:{mode}:{','.join(recipients)}",
     )
 
     body: dict[str, Any] = {
         "title": title,
         "contextSummary": context_summary,
         "urgency": urgency,
+        "mode": mode,
         "blockedTaskId": blocked_task_id,
         "sourceAgentJobId": source_job_id,
         "options": options,
     }
     if criteria:
         body["criteria"] = criteria
+    if recipients:
+        body["to"] = recipients
+        body["recipients"] = recipients
+    if scores:
+        body["scores"] = scores
+    if flows:
+        body["flows"] = flows
     if config.organization_id:
         body["organizationId"] = config.organization_id
 
@@ -235,12 +335,41 @@ def handle_decide_propose(
     )
     decision_obj = resp.data.get("decision") if isinstance(resp.data.get("decision"), dict) else {}
     dec_id = decision_obj.get("id") or resp.data.get("decisionId") or "created"
-    human = (
-        f"Proposed Decision Card [{dec_id}]: {title}"
-        + (f" (blocking task {blocked_task_id})" if blocked_task_id else "")
-        if resp.ok
-        else f"Error proposing decision: {resp.error}"
-    )
+    distribution = resp.data.get("distribution") if isinstance(resp.data.get("distribution"), dict) else {}
+    guest_links = resp.data.get("guestLinks") if isinstance(resp.data.get("guestLinks"), list) else []
+
+    if resp.ok:
+        mode_badge = "ADVISORY · Default-Unless-Vetoed" if mode == "ADVISORY" else "BLOCKING"
+        human_lines = [
+            f"Proposed Decision Card [{dec_id}] ({mode_badge}): {title}"
+            + (f" (task {blocked_task_id})" if blocked_task_id else "")
+        ]
+        dist_recs = (
+            distribution.get("deliveries")
+            if isinstance(distribution.get("deliveries"), list)
+            else distribution.get("recipients")
+            if isinstance(distribution.get("recipients"), list)
+            else []
+        )
+        if dist_recs:
+            rec_labels = [
+                f"{r.get('displayName') or r.get('name') or r.get('handle') or r.get('email')} <{r.get('email')}>"
+                for r in dist_recs
+                if isinstance(r, dict)
+            ]
+            human_lines.append(f"  Distributed to : {', '.join(rec_labels)}")
+        elif recipients:
+            human_lines.append(f"  Recipients     : {', '.join(recipients)}")
+        for link in guest_links:
+            if isinstance(link, dict):
+                vote_url = link.get("shareUrl") or link.get("voteUrl")
+                link_email = link.get("guestEmail") or link.get("email")
+                if vote_url:
+                    human_lines.append(f"  1-Click Link   : {link_email} -> {vote_url}")
+        human: str | list[str] = human_lines if len(human_lines) > 1 else human_lines[0]
+    else:
+        human = f"Error proposing decision: {resp.error}"
+
     emit_output(
         {**resp.data, "idempotencyKey": idempotency_key},
         human,
@@ -352,9 +481,18 @@ def handle_decide_check(
         return resp.exit_code
 
     decisions = resp.data.get("decisions", []) if isinstance(resp.data.get("decisions"), list) else []
-    open_blocking = [
+    open_decisions = [
         d for d in decisions
         if isinstance(d, dict) and str(d.get("status", "OPEN")).upper() == "OPEN"
+    ]
+    open_blocking = [
+        d for d in open_decisions
+        if str(d.get("deliveryMode") or d.get("mode") or "BLOCKING").upper() != "ADVISORY"
+        and not str(d.get("contextSummary") or "").startswith("[MODE:ADVISORY]")
+    ]
+    open_advisory = [
+        d for d in open_decisions
+        if d not in open_blocking
     ]
     if open_blocking:
         first = open_blocking[0]
@@ -364,6 +502,7 @@ def handle_decide_check(
             "error": "BLOCKED_ON_DECISION",
             "taskId": task_id,
             "blockingDecisions": open_blocking,
+            "advisoryDecisions": open_advisory,
             "message": f"Task '{task_id or 'workspace'}' is blocked by open decision '{first.get('id')}' ({first.get('title')}).",
         }
         emit_output(
@@ -379,10 +518,16 @@ def handle_decide_check(
         "blocked": False,
         "taskId": task_id,
         "blockingDecisions": [],
+        "advisoryDecisions": open_advisory,
     }
+    human_msg = (
+        f"Clear: No open blocking decisions for {task_id or 'workspace'} ({len(open_advisory)} advisory decision(s) open)."
+        if open_advisory
+        else f"Clear: No open blocking decisions for {task_id or 'workspace'}."
+    )
     emit_output(
         payload,
-        f"Clear: No open blocking decisions for {task_id or 'workspace'}.",
+        human_msg,
         force_json=force_json,
         stdout_stream=stdout_stream,
     )

@@ -77,13 +77,15 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
   ```
 
 ### 2.4 1-Click Decisions (`Decide`)
-- **`GET /api/v1/decide?status=OPEN`** — List decisions with weighted criteria and computed option rankings.
-- **`POST /api/v1/decide/escalate`** — Create a 1-Click Decision Card:
+- **`GET /api/v1/decide?status=OPEN`** — List decisions with weighted criteria, `deliveryMode` (`"BLOCKING"` | `"ADVISORY"`), and computed option rankings.
+- **`POST /api/v1/decide/escalate`** — Create & distribute a 1-Click Decision Card (`to` / `recipients` resolves teammate handles/names/emails, mints 72h 1-Click Magic Links, and sends rich Decision Card emails + Slack notifications):
   ```json
   {
     "title": "Cache Invalidation Strategy",
     "contextSummary": "Need sub-50ms reads across regional workers",
     "urgency": "HIGH",
+    "mode": "ADVISORY",
+    "to": ["kate", "doc"],
     "blockedTaskId": "task_104",
     "options": [
       { "label": "Redis PubSub", "summary": "Low latency push", "isRecommended": true },
@@ -95,6 +97,7 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
     ]
   }
   ```
+- **`POST /api/v1/decide/guest-vote`** — Zero-login 1-Click Magic Link vote endpoint (`token`, `optionId` or `customOption: { label, summary }`, `score`, `rationale`). Auto-resolves the Decision (`status: "DECIDED"`) and unblocks waiting tasks when an `APPROVER` stakeholder votes.
 - **`POST /api/v1/decide/<id>/score`** — Score an option (`optionId`, `criterionId`, `score` 1-10) or resolve (`action: "resolve"`, `chosenOptionId`, `rationale`).
 
 ### 2.5 Interstitial Seams, Scope Leases & Scratchpad

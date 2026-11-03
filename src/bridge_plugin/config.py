@@ -53,11 +53,34 @@ class BridgeConfig:
     repository: str | None = None
     api_key: str | None = None
     user_email: str | None = None
+    agency_organization_id: str | None = None
+    agency_api_key: str | None = None
+    is_internal_target: bool = False
     config_path: Path | None = None
-    credentials_path: Path | None = None
+    credentials_path: Path = field(default_factory=lambda: Path.home() / ".config" / "bridge" / "credentials.json")
     workspace_root: Path = field(default_factory=Path.cwd)
     auth_source: str = "none"
     env: Mapping[str, str] = field(default_factory=lambda: os.environ)
+
+    def for_agency(self) -> BridgeConfig:
+        """Return a BridgeConfig scoped to the upstream Agency / Home workspace (e.g. org_xray_tech)."""
+        target_org = self.agency_organization_id or self.organization_id
+        target_key = self.agency_api_key or self.api_key
+        return BridgeConfig(
+            organization_id=target_org,
+            api_url=self.api_url,
+            repository=self.repository,
+            api_key=target_key,
+            user_email=self.user_email,
+            agency_organization_id=self.agency_organization_id,
+            agency_api_key=self.agency_api_key,
+            is_internal_target=True,
+            config_path=self.config_path,
+            credentials_path=self.credentials_path,
+            workspace_root=self.workspace_root,
+            auth_source=self.auth_source,
+            env=self.env,
+        )
 
     @property
     def is_authenticated(self) -> bool:
@@ -128,20 +151,53 @@ def save_user_credentials(
     api_url: str = DEFAULT_API_URL,
     organization_id: str | None = None,
     user_email: str | None = None,
+    agency_organization_id: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Path:
-    """Save user credentials to ~/.config/bridge/credentials.json with 0600 permissions."""
+    """Save user credentials to ~/.config/bridge/credentials.json with 0600 permissions and multi-workspace keyring."""
     cred_path = get_credentials_path(env=env)
     cred_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_user_credentials(env=env)
+    workspaces: dict[str, Any] = (
+        dict(existing["workspaces"])
+        if isinstance(existing.get("workspaces"), dict)
+        else {}
+    )
+
+    cleaned_key = api_key.strip()
+    cleaned_url = (api_url or DEFAULT_API_URL).rstrip("/")
+    resolved_org = (
+        (organization_id or "").strip()
+        or str(decode_api_key_claims(cleaned_key).get("organizationId") or "").strip()
+        or None
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if resolved_org:
+        ws_entry: dict[str, Any] = {
+            "apiKey": cleaned_key,
+            "apiUrl": cleaned_url,
+            "organizationId": resolved_org,
+            "updatedAt": now_iso,
+        }
+        if user_email:
+            ws_entry["userEmail"] = user_email.strip()
+        workspaces[resolved_org] = ws_entry
+
     payload: dict[str, Any] = {
-        "apiKey": api_key.strip(),
-        "apiUrl": (api_url or DEFAULT_API_URL).rstrip("/"),
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        **existing,
+        "apiKey": cleaned_key,
+        "apiUrl": cleaned_url,
+        "updatedAt": now_iso,
+        "workspaces": workspaces,
     }
-    if organization_id:
-        payload["organizationId"] = organization_id.strip()
+    if resolved_org:
+        payload["organizationId"] = resolved_org
     if user_email:
         payload["userEmail"] = user_email.strip()
+    if agency_organization_id:
+        payload["agencyOrganizationId"] = agency_organization_id.strip()
+
     cred_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(cred_path, 0o600)
@@ -177,6 +233,7 @@ def resolve_config(
     env: Mapping[str, str] | None = None,
     *,
     explicit_org: str | None = None,
+    explicit_agency_org: str | None = None,
     explicit_url: str | None = None,
     explicit_repo: str | None = None,
     explicit_api_key: str | None = None,
@@ -198,8 +255,35 @@ def resolve_config(
 
     creds = load_user_credentials(env=environ)
     cred_path = get_credentials_path(env=environ)
+    workspaces_keyring = creds.get("workspaces") if isinstance(creds.get("workspaces"), dict) else {}
 
-    # 1. Resolve API Key & Auth Source
+    # 1. Resolve Organization ID & Agency Organization ID
+    org_id = (
+        explicit_org
+        or environ.get("BRIDGE_ORG_ID")
+        or environ.get("WORKSPACE_ORG_ID")
+        or file_data.get("organizationId")
+        or file_data.get("orgId")
+        or creds.get("organizationId")
+        or None
+    )
+    if isinstance(org_id, str):
+        org_id = org_id.strip() or None
+
+    agency_org_id = (
+        explicit_agency_org
+        or environ.get("BRIDGE_AGENCY_ORG_ID")
+        or file_data.get("agencyOrganizationId")
+        or file_data.get("upstreamOrganizationId")
+        or creds.get("agencyOrganizationId")
+        or None
+    )
+    if isinstance(agency_org_id, str):
+        agency_org_id = agency_org_id.strip() or None
+    if agency_org_id and agency_org_id == org_id:
+        agency_org_id = None
+
+    # 2. Resolve API Key & Auth Source (checking workspace keyring for matching org_id)
     api_key: str | None = None
     auth_source = "none"
 
@@ -216,24 +300,36 @@ def resolve_config(
         if not api_key and isinstance(file_data.get("apiKey"), str) and file_data["apiKey"].strip():
             api_key = file_data["apiKey"].strip()
             auth_source = f"file:{cfg_file.name if cfg_file else '.bridge.json'}"
+        if (
+            not api_key
+            and org_id
+            and isinstance(workspaces_keyring.get(org_id), dict)
+            and isinstance(workspaces_keyring[org_id].get("apiKey"), str)
+            and workspaces_keyring[org_id]["apiKey"].strip()
+        ):
+            api_key = workspaces_keyring[org_id]["apiKey"].strip()
+            auth_source = f"credentials:{org_id}"
         if not api_key and isinstance(creds.get("apiKey"), str) and creds["apiKey"].strip():
             api_key = creds["apiKey"].strip()
             auth_source = "credentials"
 
-    # 2. Resolve Organization ID
-    org_id = (
-        explicit_org
-        or environ.get("BRIDGE_ORG_ID")
-        or environ.get("WORKSPACE_ORG_ID")
-        or file_data.get("organizationId")
-        or file_data.get("orgId")
-        or creds.get("organizationId")
+    # 3. Resolve Agency API Key (for dual-homed Client + Agency workspaces)
+    agency_api_key: str | None = (
+        environ.get("BRIDGE_AGENCY_API_KEY", "").strip()
+        or (file_data.get("agencyApiKey", "").strip() if isinstance(file_data.get("agencyApiKey"), str) else "")
         or None
     )
-    if isinstance(org_id, str):
-        org_id = org_id.strip() or None
+    if (
+        not agency_api_key
+        and agency_org_id
+        and isinstance(workspaces_keyring.get(agency_org_id), dict)
+        and isinstance(workspaces_keyring[agency_org_id].get("apiKey"), str)
+    ):
+        agency_api_key = workspaces_keyring[agency_org_id]["apiKey"].strip() or None
+    if not agency_api_key:
+        agency_api_key = api_key
 
-    # 3. Resolve API URL
+    # 4. Resolve API URL
     api_url = (
         explicit_url
         or environ.get("BRIDGE_API_URL")
@@ -244,7 +340,7 @@ def resolve_config(
     )
     api_url = str(api_url).strip().rstrip("/") or DEFAULT_API_URL
 
-    # 4. Resolve Repository Slug
+    # 5. Resolve Repository Slug
     repo = (
         explicit_repo
         or environ.get("BRIDGE_REPO")
@@ -266,6 +362,8 @@ def resolve_config(
         repository=repo,
         api_key=api_key,
         user_email=user_email,
+        agency_organization_id=agency_org_id,
+        agency_api_key=agency_api_key,
         config_path=cfg_file,
         credentials_path=cred_path,
         workspace_root=workspace_root,
@@ -280,12 +378,13 @@ def write_project_config(
     organization_id: str,
     repository: str,
     api_url: str = DEFAULT_API_URL,
+    agency_organization_id: str | None = None,
     filename: str = ".bridge.json",
 ) -> Path:
     """Write .bridge.json in the workspace root."""
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / filename
-    payload = {
+    payload: dict[str, Any] = {
         "plugin": "bridge",
         "organizationId": organization_id.strip(),
         "apiUrl": api_url.strip().rstrip("/"),
@@ -294,6 +393,8 @@ def write_project_config(
         "fallbackApiKeyEnv": "WORKSPACE_API_KEY",
         "supportedEnvVars": list(SUPPORTED_API_KEY_ENVS),
     }
+    if agency_organization_id and agency_organization_id.strip():
+        payload["agencyOrganizationId"] = agency_organization_id.strip()
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 

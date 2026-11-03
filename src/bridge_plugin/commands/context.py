@@ -96,6 +96,11 @@ def _format_context_human(payload: dict[str, Any]) -> list[str]:
     lines: list[str] = [
         f"Bridge Organizational Context ({payload.get('windowDays', 7)}d Window) — Alignment Check: {badge}",
         f"  Organization : {payload.get('organizationId') or '(default)'}",
+        *(
+            [f"  Agency Org   : {payload['agencyContext'].get('organizationId')} (Dual-Homed Client + Agency)"]
+            if isinstance(payload.get("agencyContext"), dict) and payload["agencyContext"].get("organizationId")
+            else []
+        ),
         f"  Repository   : {payload.get('repository') or '(workspace)'}",
         f"  Branch       : {payload.get('gitBranch') or 'main'}",
     ]
@@ -103,6 +108,16 @@ def _format_context_human(payload: dict[str, Any]) -> list[str]:
         team_obj = payload["team"]
         team_label = team_obj.get("name") or team_obj.get("slug") if isinstance(team_obj, dict) else str(team_obj)
         lines.append(f"  Team Scope   : {team_label}")
+
+    roster = payload.get("teamRoster") if isinstance(payload.get("teamRoster"), list) else []
+    if roster:
+        roster_labels = [
+            f"{m.get('handle') or m.get('name')} <{m.get('email')}>"
+            for m in roster[:10]
+            if isinstance(m, dict) and m.get("email")
+        ]
+        if roster_labels:
+            lines.append(f"  Team Roster  : {', '.join(roster_labels)}")
 
     if reasons:
         lines.append("  Alignment    :")
@@ -287,6 +302,34 @@ def handle_context(
     data.setdefault("seams", [])
     data.setdefault("corrections", [])
     data["alignment"] = _compute_fallback_alignment(data)
+
+    # Dual-Homed Client + Agency Hydration: When working in a Client workspace that also links an
+    # upstream Agency workspace (`agencyOrganizationId`, e.g. org_xray_tech), pull internal agency
+    # playbooks, resolved decisions, internal blockers, and agency teamRoster in one pass.
+    if config.agency_organization_id and not config.is_internal_target:
+        try:
+            agency_cfg = config.for_agency()
+            agency_client = BridgeClient(
+                agency_cfg,
+                agent_id=runtime["agentId"],
+                transport=client._transport,
+                env=config.env,
+            )
+            agency_params: dict[str, Any] = {"days": days, "organizationId": agency_cfg.organization_id}
+            if repo:
+                agency_params["repository"] = str(repo).strip()
+            agency_resp = agency_client.request("GET", "/api/v1/fleet/context", params=agency_params)
+            if agency_resp.ok and isinstance(agency_resp.data, dict):
+                data["agencyOrganizationId"] = agency_cfg.organization_id
+                data["agencyContext"] = {
+                    "organizationId": agency_cfg.organization_id,
+                    "teamRoster": agency_resp.data.get("teamRoster") or [],
+                    "resolvedDecisions": agency_resp.data.get("resolvedDecisions") or [],
+                    "pendingDecisions": agency_resp.data.get("pendingDecisions") or [],
+                    "seams": agency_resp.data.get("seams") or [],
+                }
+        except Exception:
+            pass
 
     human_lines = _format_context_human(data)
     emit_output(data, human_lines, force_json=force_json, stdout_stream=stdout_stream)

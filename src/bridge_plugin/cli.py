@@ -88,6 +88,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force deterministic JSON output on stdout.",
     )
     parser.add_argument("--org", help="Override Bridge organizationId.")
+    parser.add_argument(
+        "--agency-org",
+        dest="agency_org",
+        help="Upstream Agency organization ID (e.g. org_xray_tech) for dual-homed client workspaces.",
+    )
+    parser.add_argument(
+        "--internal",
+        "--agency",
+        dest="internal",
+        action="store_true",
+        default=False,
+        help="Route command to the upstream Agency workspace (agencyOrganizationId) for internal blockers, SOW decisions, or playbooks.",
+    )
     parser.add_argument("--url", help="Override Bridge API URL.")
     parser.add_argument("--repo", help="Override repository slug (owner/name).")
     parser.add_argument("--api-key", dest="global_api_key", help="Override Bridge API key.")
@@ -114,9 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     for init_cmd in ("init", "connect", "link"):
         init_p = subparsers.add_parser(init_cmd, help="Bind repository to Bridge by writing .bridge.json.")
-        init_p.add_argument("--org", help="Bridge organization ID.")
+        init_p.add_argument("--org", help="Bridge organization ID (Client workspace ID on client repos).")
+        init_p.add_argument("--agency-org", dest="agency_org", help="Upstream Agency organization ID (e.g. org_xray_tech).")
         init_p.add_argument("--repo", help="Repository slug (owner/name).")
         init_p.add_argument("--url", help="Bridge API URL.")
+        init_p.add_argument("--no-setup", action="store_true", default=False, help="Skip automatic agent skill/MCP setup.")
         init_p.add_argument("--json", action="store_true", default=False)
 
     status_p = subparsers.add_parser("status", help="Show Bridge workspace status, bound task, claims, and spool.")
@@ -212,6 +227,26 @@ def build_parser() -> argparse.ArgumentParser:
     dec_prop_p.add_argument("--urgency", default="STANDARD", help="Urgency (CRITICAL, HIGH, STANDARD, LOW).")
     dec_prop_p.add_argument("--options", help="Comma-separated option labels or JSON array.")
     dec_prop_p.add_argument("--criteria", help="Comma-separated 'Name:Weight' pairs or JSON array.")
+    dec_prop_p.add_argument(
+        "--to",
+        "--recipients",
+        dest="to",
+        help="Comma-separated recipient handles/emails (e.g. 'kate,doc') to receive 1-Click Magic Links.",
+    )
+    dec_prop_p.add_argument(
+        "--mode",
+        choices=["blocking", "advisory", "BLOCKING", "ADVISORY"],
+        default="blocking",
+        help="Delivery mode: 'blocking' (blocks task until resolved) or 'advisory' (Default-Unless-Vetoed — notifies recipients without blocking).",
+    )
+    dec_prop_p.add_argument(
+        "--advisory",
+        action="store_true",
+        default=False,
+        help="Shorthand for --mode advisory (Default-Unless-Vetoed).",
+    )
+    dec_prop_p.add_argument("--scores", help="JSON array or comma-separated 'optIdx:critIdx:score[:rationale]' initial matrix scores.")
+    dec_prop_p.add_argument("--flow", "--flows", dest="flow", help="JSON array of Impact Flow Simulator nodes/edges or pipe-separated 'id:label:kind' nodes.")
     dec_prop_p.add_argument("--task", help="Blocked task ID (defaults to current branch task).")
     dec_prop_p.add_argument("--job", help="Source agent job ID.")
     dec_prop_p.add_argument("--json", action="store_true", default=False)
@@ -438,13 +473,19 @@ def run_cli(
     args_list = list(argv) if argv is not None else sys.argv[1:]
     force_json = "--json" in args_list
 
-    # Strip --json and hoist --org from subparser positions while keeping them on parsed namespace
+    # Strip --json, --internal/--agency, and hoist --org / --agency-org from subparser positions
     explicit_org: str | None = None
+    explicit_agency_org: str | None = None
+    force_internal = False
     cleaned_args: list[str] = []
     idx = 0
     while idx < len(args_list):
         token = args_list[idx]
         if token == "--json":
+            idx += 1
+            continue
+        if token in ("--internal", "--agency"):
+            force_internal = True
             idx += 1
             continue
         if token == "--org" and idx + 1 < len(args_list):
@@ -453,6 +494,14 @@ def run_cli(
             continue
         if token.startswith("--org="):
             explicit_org = token.split("=", 1)[1]
+            idx += 1
+            continue
+        if token == "--agency-org" and idx + 1 < len(args_list):
+            explicit_agency_org = args_list[idx + 1]
+            idx += 2
+            continue
+        if token.startswith("--agency-org="):
+            explicit_agency_org = token.split("=", 1)[1]
             idx += 1
             continue
         cleaned_args.append(token)
@@ -468,17 +517,23 @@ def run_cli(
         return int(exc.code) if isinstance(exc.code, int) else EXIT_ERROR
 
     args.json = force_json
+    args.internal = force_internal or bool(getattr(args, "internal", False))
     if explicit_org is not None:
         args.org = explicit_org
+    if explicit_agency_org is not None:
+        args.agency_org = explicit_agency_org
 
     config = resolve_config(
         cwd=cwd,
         env=env,
         explicit_org=getattr(args, "org", None),
+        explicit_agency_org=getattr(args, "agency_org", None),
         explicit_url=getattr(args, "url", None),
         explicit_repo=getattr(args, "repo", None),
         explicit_api_key=getattr(args, "global_api_key", None),
     )
+    if getattr(args, "internal", False):
+        config = config.for_agency()
     runtime = detect_runtime_context(cwd=config.workspace_root, env=env)
     client = BridgeClient(config, agent_id=runtime["agentId"], transport=transport, env=env)
 

@@ -105,16 +105,28 @@ brg worktree rm oauth-pkce
 brg decide list --status OPEN --json
 brg decide show <decisionId> --json
 
-# Check if current task is blocked by an open decision (exits 2 if blocked)
+# Check if current task is blocked by an open BLOCKING decision (exits 2 if blocked; exits 0 if only ADVISORY decisions are open)
 brg decide check --json
 
-# Propose an architectural or product trade-off card
+# Propose & distribute a 1-Click Decision Card (--to resolves teammate names/handles/emails and mints 72h 1-Click Magic Links)
 brg decide propose \
   --title "Session Token Storage" \
   --context "Choose between HttpOnly cookie session and Web Worker memory token" \
+  --to "kate,doc" \
+  --mode blocking \
   --options "HttpOnly Cookie,Web Worker Token" \
   --criteria "Security:10,UX Latency:8" \
+  --scores "0:0:9:Zero XSS surface,1:1:9:Sub-ms worker reads" \
   --urgency HIGH
+
+# Propose an ADVISORY ("Default-Unless-Vetoed") Decision Card during overnight or promo runs without blocking execution
+brg decide propose \
+  --title "Promo Cohort 2 Cutover" \
+  --context "Proceeding with Cohort 2 promotion unless overridden via 1-Click Magic Link" \
+  --to "kate,doc" \
+  --mode advisory \
+  --options "Promote Cohort 2 Now,Hold Cohort 2" \
+  --criteria "Velocity:9,Safety:8"
 
 # Score an option (1-10) or resolve a decision
 brg decide score <decisionId> --option 0 --criterion 0 --score 9 --rationale "Zero XSS surface"
