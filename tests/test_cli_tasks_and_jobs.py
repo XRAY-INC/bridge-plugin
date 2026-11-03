@@ -280,3 +280,59 @@ def test_tasks_create_jobs_dispatch_and_memory_pin(tmp_path: Path) -> None:
     assert pin_data["upsertedPinCount"] == 1
     assert pin_data["upsertedChunkCount"] == 1
 
+
+def test_tasks_capsule_single_and_compile_all(tmp_path: Path) -> None:
+    """Verify `bridge tasks capsule <taskId>` and `bridge tasks capsule --compile-all`."""
+    env = _setup_env(tmp_path)
+
+    def capsule_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        body = json.loads(req.data.decode("utf-8")) if req.data else {}
+        if body.get("compileAllOpen"):
+            return 201, json.dumps(
+                {
+                    "ok": True,
+                    "compiledCount": 2,
+                    "capsules": [
+                        {"id": "cap_1", "taskId": "t_1", "version": 1},
+                        {"id": "cap_2", "taskId": "t_2", "version": 1},
+                    ],
+                }
+            ).encode("utf-8")
+        return 201, json.dumps(
+            {
+                "ok": True,
+                "capsule": {
+                    "id": "cap_single",
+                    "taskId": body.get("taskId"),
+                    "version": 1,
+                    "compiledMarkdown": f"# Execution Context Capsule: {body.get('taskId')}\n## 4. Command-Line Execution & Write-Back Protocol (`brg`)",
+                },
+            }
+        ).encode("utf-8")
+
+    out_single = NonTTYBuffer()
+    code_single = run_cli(
+        ["tasks", "capsule", "task_abc"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_single,
+        transport=capsule_transport,
+    )
+    assert code_single == EXIT_OK
+    single_payload = json.loads(out_single.getvalue())
+    assert single_payload["capsule"]["taskId"] == "task_abc"
+    assert "Command-Line Execution" in single_payload["capsule"]["compiledMarkdown"]
+
+    out_all = NonTTYBuffer()
+    code_all = run_cli(
+        ["tasks", "capsule", "--compile-all"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_all,
+        transport=capsule_transport,
+    )
+    assert code_all == EXIT_OK
+    all_payload = json.loads(out_all.getvalue())
+    assert all_payload["compiledCount"] == 2
+
+

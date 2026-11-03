@@ -55,6 +55,7 @@ from .commands.tasks import (
     handle_jobs_dispatch,
     handle_jobs_list,
     handle_tasks_cancel,
+    handle_tasks_capsule,
     handle_tasks_create,
     handle_tasks_list,
     handle_tasks_start,
@@ -288,6 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
     t_cancel_p.add_argument("task_ids", nargs="+", help="One or more Task IDs to cancel.")
     t_cancel_p.add_argument("--reason", default="Superseded / duplicate task canceled via Bridge CLI", help="Cancellation reason.")
     t_cancel_p.add_argument("--json", action="store_true", default=False)
+
+    t_capsule_p = tasks_sub.add_parser("capsule", help="Compile or fetch a grounded Execution Context Capsule for a task.")
+    t_capsule_p.add_argument("task_id", nargs="?", help="Task ID (defaults to bound branch taskId).")
+    t_capsule_p.add_argument("--compile-all", action="store_true", help="Compile capsules for all open non-archived workspace tasks.")
+    t_capsule_p.add_argument("--frozen-globs", "--globs", dest="frozen_globs", help="Optional comma-separated frozen file globs.")
+    t_capsule_p.add_argument("--verify-cmd", help="Optional verification command override.")
+    t_capsule_p.add_argument("--json", action="store_true", default=False)
 
     jobs_parser = subparsers.add_parser("jobs", help="List, dispatch, claim, or complete dispatched agent jobs.")
     jobs_sub = jobs_parser.add_subparsers(dest="jobs_action")
@@ -570,6 +578,8 @@ def run_cli(
             return handle_tasks_update(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "cancel":
             return handle_tasks_cancel(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub == "capsule":
+            return handle_tasks_capsule(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd == "jobs":
         sub = getattr(args, "jobs_action", "list")

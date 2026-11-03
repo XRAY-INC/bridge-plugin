@@ -741,3 +741,73 @@ def handle_jobs_complete(
     )
     emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
     return resp.exit_code
+
+
+def handle_tasks_capsule(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Compile or fetch a grounded Execution Context Capsule for a task (/api/v1/fleet/capsules)."""
+    compile_all = bool(getattr(args, "compile_all", False))
+    branch = detect_git_branch(cwd=config.workspace_root, env=config.env)
+    branch_state = get_branch_state(config, branch=branch)
+    task_id = str(getattr(args, "task_id", None) or branch_state.get("taskId") or "").strip()
+
+    if not compile_all and not task_id:
+        emit_output(
+            {
+                "ok": False,
+                "error": "TASK_ID_REQUIRED",
+                "message": "Provide a taskId, pass --compile-all, or run on a branch bound via 'brg tasks start'.",
+            },
+            "Error: taskId is required (or pass --compile-all).",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    body: dict[str, Any] = {}
+    if compile_all:
+        body["compileAllOpen"] = True
+    else:
+        body["taskId"] = task_id
+
+    raw_frozen = getattr(args, "frozen_globs", None)
+    if raw_frozen:
+        body["frozenGlobs"] = [g.strip() for g in str(raw_frozen).split(",") if g.strip()]
+    verify_cmd = getattr(args, "verify_cmd", None)
+    if verify_cmd:
+        body["verificationCommand"] = str(verify_cmd).strip()
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request("POST", "/api/v1/fleet/capsules", json_body=body)
+    if not resp.ok and task_id and not compile_all:
+        resp = client.request("GET", "/api/v1/fleet/capsules", params={"taskId": task_id, "compile": "1"})
+
+    if compile_all:
+        capsules = resp.data.get("capsules", []) if isinstance(resp.data.get("capsules"), list) else []
+        human = (
+            f"Compiled {len(capsules)} execution capsule(s) for active workspace tasks."
+            if resp.ok
+            else f"Error compiling capsules: {resp.error}"
+        )
+        emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+        return resp.exit_code
+
+    cap = resp.data.get("capsule") if isinstance(resp.data.get("capsule"), dict) else {}
+    markdown = str(cap.get("compiledMarkdown") or "").strip()
+    human = (
+        markdown
+        if (resp.ok and markdown)
+        else f"Compiled capsule for task {task_id} (v{cap.get('version', 1)})."
+        if resp.ok
+        else f"Error fetching capsule for task {task_id}: {resp.error}"
+    )
+    emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
