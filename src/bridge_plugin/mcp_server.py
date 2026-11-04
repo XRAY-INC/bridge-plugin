@@ -281,7 +281,10 @@ def build_context_snapshot(config: BridgeConfig, client: BridgeClient) -> dict[s
     remote_leases: list[Any] = []
 
     if config.is_authenticated or config.is_bound:
-        dec_resp = client.request("GET", "/api/v1/decide", params={"status": "OPEN"}, require_auth=False)
+        dec_params: dict[str, Any] = {"status": "OPEN"}
+        if config.repository:
+            dec_params["repository"] = config.repository
+        dec_resp = client.request("GET", "/api/v1/decide", params=dec_params, require_auth=False)
         if dec_resp.ok and isinstance(dec_resp.data.get("decisions"), list):
             open_decisions = dec_resp.data["decisions"]
 
@@ -316,15 +319,17 @@ def read_mcp_resource(uri: str, config: BridgeConfig, client: BridgeClient) -> d
     if uri == "bridge://context":
         data = build_context_snapshot(config, client)
     elif uri == "bridge://decisions/open":
-        resp = client.request("GET", "/api/v1/decide", params={"status": "OPEN"}, require_auth=False)
+        dec_params = {"status": "OPEN", "repository": config.repository} if config.repository else {"status": "OPEN"}
+        resp = client.request("GET", "/api/v1/decide", params=dec_params, require_auth=False)
         data = {
             "ok": resp.ok,
             "uri": uri,
             "decisions": resp.data.get("decisions", []),
         }
     elif uri == "bridge://tasks/active":
-        tasks_resp = client.request("GET", "/api/v1/tasks", require_auth=False)
-        jobs_resp = client.request("GET", "/api/v1/fleet/jobs", require_auth=False)
+        repo_params = {"repository": config.repository} if config.repository else None
+        tasks_resp = client.request("GET", "/api/v1/tasks", params=repo_params, require_auth=False)
+        jobs_resp = client.request("GET", "/api/v1/fleet/jobs", params=repo_params, require_auth=False)
         data = {
             "ok": tasks_resp.ok or jobs_resp.ok,
             "uri": uri,
