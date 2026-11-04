@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridge-plugin"
-version = "0.1.0"
+version = "0.5.3"
 description = "Clean-room CLI (bridge / brg) and stdio MCP plugin for Bridge (https://bridge.xray.tech) — seams, 1-click decisions, scope leases, task branching, and P16 fact ingestion."
 readme = "README.md"
 license = { text = "MIT" }
