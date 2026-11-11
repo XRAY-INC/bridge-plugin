@@ -17,6 +17,7 @@ from ..config import (
     decode_api_key_claims,
     get_branch_state,
     load_local_claims,
+    load_user_credentials,
     normalize_team_roster,
     resolve_user_identity,
     save_cached_roster,
@@ -94,13 +95,13 @@ def handle_auth_login(
 
     # A key Bridge rejects is never saved. Being offline is not a rejection, so that case still saves.
     verify_client = BridgeClient(
-        replace(config, api_key=api_key, api_url=api_url, organization_id=org_id),
+        replace(config, api_key=api_key, api_url=api_url, organization_id=org_id, work_bound=True),
         agent_id=client.agent_id,
         timeout=client.timeout,
         transport=client._transport,
         env=client._env,
     )
-    check = verify_client.request("GET", "/api/v1/fleet/api-keys", require_auth=False)
+    check = verify_client.request("GET", "/api/v1/fleet/api-keys", require_auth=False, allow_unbound=True)
     if check.status_code in (401, 403):
         emit_output(
             {
@@ -193,7 +194,7 @@ def handle_auth_whoami(
     verify_data: dict[str, Any] = {}
     verified: bool | None = None
     if getattr(args, "verify", False):
-        resp = client.request("GET", "/api/v1/fleet/api-keys", require_auth=False)
+        resp = client.request("GET", "/api/v1/fleet/api-keys", require_auth=False, allow_unbound=True)
         verified = resp.ok
         verify_data = resp.data if resp.ok else {}
         if not resp.ok:
@@ -219,17 +220,21 @@ def handle_auth_whoami(
             )
             return EXIT_AUTH_MISSING if rejected else EXIT_ERROR
 
+    creds_env = {"BRIDGE_CREDENTIALS_PATH": str(config.credentials_path)} if config.credentials_path else config.env
+    saved_creds = load_user_credentials(env=creds_env)
     effective_agent = config.key_label if runtime["agentId"] == "bridge-cli" and config.key_label else runtime["agentId"]
     payload = {
         "ok": True,
         "authenticated": config.is_authenticated,
         "verified": verified,
+        "workContext": config.is_work_context,
         "authSource": config.auth_source,
         "keyHint": config.key_hint,
         "keyLabel": config.key_label,
         "organizationId": verify_data.get("organizationId")
         or config.organization_id
-        or decode_api_key_claims(config.api_key).get("organizationId"),
+        or decode_api_key_claims(config.api_key).get("organizationId")
+        or saved_creds.get("organizationId"),
         "apiUrl": config.api_url,
         "repository": config.repository,
         "projectName": config.project_name,
@@ -507,10 +512,13 @@ def handle_init(
     stdout_stream: Any = None,
 ) -> int:
     """Bind the current repository to Bridge by writing .bridge.json."""
+    creds_env = {"BRIDGE_CREDENTIALS_PATH": str(config.credentials_path)} if config.credentials_path else config.env
+    saved_creds = load_user_credentials(env=creds_env)
     org_id = (
         getattr(args, "org", None)
         or config.organization_id
         or decode_api_key_claims(config.api_key).get("organizationId")
+        or saved_creds.get("organizationId")
         or ""
     ).strip()
     if not org_id:
@@ -971,20 +979,10 @@ def _setup_global_machine(
                     agy_data = {}
             servers = agy_data.setdefault("mcpServers", {})
             if isinstance(servers, dict):
-                existing_bridge = servers.get("bridge_bridge-mcp")
-                if not isinstance(existing_bridge, dict):
-                    args_list: list[str] = []
-                    if api_url:
-                        args_list.extend(["--url", api_url])
-                    if api_key:
-                        args_list.extend(["--api-key", api_key])
-                    servers["bridge_bridge-mcp"] = {"command": mcp_cmd, "args": args_list}
-                elif api_key and "--api-key" not in (existing_bridge.get("args") or []):
-                    args_list = list(existing_bridge.get("args") or [])
-                    if api_url and "--url" not in args_list:
-                        args_list.extend(["--url", api_url])
-                    args_list.extend(["--api-key", api_key])
-                    existing_bridge["args"] = args_list
+                args_list: list[str] = []
+                if api_url:
+                    args_list.extend(["--url", api_url])
+                servers["bridge_bridge-mcp"] = {"command": mcp_cmd, "args": args_list}
                 agy_mcp_path.parent.mkdir(parents=True, exist_ok=True)
                 agy_mcp_path.write_text(json.dumps(agy_data, indent=2) + "\n", encoding="utf-8")
                 files_written.append(str(agy_mcp_path))
@@ -1161,15 +1159,17 @@ def handle_setup(
         post_hook = hooks_dir / "post-commit"
         post_script = (
             "#!/usr/bin/env sh\n"
-            "# Bridge post-commit hook: prints live WORK/LOCAL status-bar and logs commit signal\n"
+            "# Bridge post-commit hook: prints live WORK/LOCAL status-bar and logs commit signal ONLY in bound WORK repos\n"
             "if command -v brg >/dev/null 2>&1; then\n"
             '  STATUS_BAR=$(brg status-bar --text 2>/dev/null)\n'
             '  if [ -n "$STATUS_BAR" ]; then\n'
             '    printf "%s\\n" "$STATUS_BAR"\n'
             "  fi\n"
-            '  MSG=$(git log -1 --pretty=%s 2>/dev/null)\n'
-            '  SHA=$(git rev-parse HEAD 2>/dev/null)\n'
-            '  brg seam win "$MSG" --commit "$SHA" >/dev/null 2>&1 || true\n'
+            '  if [ -f ".bridge.json" ] || [ -f ".workspace-project.json" ]; then\n'
+            '    MSG=$(git log -1 --pretty=%s 2>/dev/null)\n'
+            '    SHA=$(git rev-parse HEAD 2>/dev/null)\n'
+            '    brg seam win "$MSG" --commit "$SHA" >/dev/null 2>&1 || true\n'
+            "  fi\n"
             "fi\n"
         )
         post_hook.write_text(post_script, encoding="utf-8")

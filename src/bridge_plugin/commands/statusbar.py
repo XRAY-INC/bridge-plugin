@@ -197,15 +197,7 @@ def is_work_context(config: BridgeConfig) -> bool:
     Personal or unbound local directories (where `organizationId` only exists in global `~/.config/bridge/credentials.json`)
     return False (`LOCAL`), ensuring full transparency that the folder is not bound to a work workspace.
     """
-    if config.config_path is not None and config.config_path.is_file():
-        return True
-    if config.project_name or config.client_name:
-        return True
-    environ = config.env
-    for key in ("BRIDGE_ORG_ID", "WORKSPACE_ORG_ID", "BRIDGE_PROJECT", "BRIDGE_CLIENT"):
-        if environ.get(key, "").strip():
-            return True
-    return False
+    return config.is_work_context
 
 
 def get_status_bar_config(config: BridgeConfig) -> dict[str, Any]:
@@ -411,15 +403,15 @@ def render_status_bar(
         env_harness = "codex"
 
     harness_name = explicit_agent or env_harness or tree_agent
-    key_label = runtime.get("keyLabel")
+    key_label = runtime.get("keyLabel") if work_bound else None
     if explicit_agent:
         agent_str = explicit_agent
-    elif harness_name and key_label and harness_name.lower() != key_label.lower():
-        agent_str = f"{harness_name}:{key_label}" if not work_bound else harness_name
     elif harness_name:
         agent_str = harness_name
-    else:
+    elif work_bound:
         agent_str = runtime["agentId"]
+    else:
+        agent_str = "bridge-cli"
 
     model_str = (
         explicit_model

@@ -290,7 +290,7 @@ def build_context_snapshot(config: BridgeConfig, client: BridgeClient) -> dict[s
     remote_leases: list[Any] = []
     custom_instructions: dict[str, Any] | None = load_cached_custom_instructions(config.workspace_root)
 
-    if config.is_authenticated or config.is_bound:
+    if config.is_work_context and (config.is_authenticated or config.is_bound):
         dec_params: dict[str, Any] = {"status": "OPEN"}
         if config.repository:
             dec_params["repository"] = config.repository
@@ -339,6 +339,8 @@ def build_context_snapshot(config: BridgeConfig, client: BridgeClient) -> dict[s
     return {
         "ok": True,
         "uri": "bridge://context",
+        "workContext": config.is_work_context,
+        "mode": "WORK" if config.is_work_context else "LOCAL",
         "organizationId": config.organization_id,
         "repository": config.repository,
         "projectName": config.project_name,
@@ -867,7 +869,20 @@ def run_stdio_server(
 
 
 def main() -> None:
-    sys.exit(run_stdio_server())
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="bridge-mcp", add_help=False)
+    parser.add_argument("--url", dest="url", default=None)
+    parser.add_argument("--api-key", dest="api_key", default=None)
+    parser.add_argument("--cwd", dest="cwd", default=None)
+    known, _ = parser.parse_known_args()
+    cwd_path = Path(known.cwd).resolve() if known.cwd else None
+    cfg = resolve_config(
+        cwd=cwd_path,
+        explicit_url=known.url,
+        explicit_api_key=known.api_key,
+    )
+    sys.exit(run_stdio_server(config=cfg))
 
 
 if __name__ == "__main__":

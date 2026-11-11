@@ -587,3 +587,138 @@ def test_status_bar_work_vs_local_transparency_and_segments(tmp_path: Path) -> N
     assert "│ LOCAL │ Personal_Game_Prototype:" in hook_res["injectSteps"][0]["ephemeralMessage"]
 
 
+def test_local_unbound_repo_never_leaks_to_bridge_cli_or_mcp(tmp_path: Path) -> None:
+    """Verify an unbound LOCAL directory NEVER sends network requests or offline spools to Bridge
+    even when global ~/.config/bridge/credentials.json and BRIDGE_API_KEY hold valid work credentials.
+    """
+    import base64
+    from bridge_plugin.client import BridgeClient
+    from bridge_plugin.config import resolve_config, save_user_credentials
+    from bridge_plugin.mcp_server import handle_jsonrpc_message
+    from bridge_plugin.runtime import EXIT_AUTH_MISSING
+
+    creds_path = tmp_path / "creds.json"
+    claims_b64 = (
+        base64.urlsafe_b64encode(
+            json.dumps({"organizationId": "org_acme", "label": "workstation-key"}).encode("utf-8")
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    work_key = f"xrkey_v1.{claims_b64}.sig"
+    env = {
+        "BRIDGE_API_KEY": work_key,
+        "BRIDGE_CREDENTIALS_PATH": str(creds_path),
+        "ANTIGRAVITY_AGENT": "1",
+    }
+    save_user_credentials(
+        api_key=work_key,
+        api_url="https://bridge.xray.tech",
+        organization_id="org_acme",
+        user_email="alex@acme.io",
+        env=env,
+    )
+
+    # Create a personal unbound Git repo (`tower-infra`) with NO .bridge.json
+    local_repo = tmp_path / "tower-infra"
+    local_repo.mkdir()
+    _init_git_repo(local_repo)
+    subprocess.run(["git", "config", "user.name", "Alex Personal"], cwd=str(local_repo), check=True)
+    subprocess.run(["git", "config", "user.email", "personal@example.com"], cwd=str(local_repo), check=True)
+
+    # 1. Config & status-bar must stay strictly LOCAL and NOT attach work org or work API key label
+    local_cfg = resolve_config(cwd=local_repo, env=env)
+    assert local_cfg.is_work_context is False
+    assert local_cfg.organization_id is None
+
+    out_sb = NonTTYBuffer()
+    assert run_cli(["status-bar", "--json"], cwd=local_repo, env=env, stdout_stream=out_sb) == EXIT_OK
+    sb_data = json.loads(out_sb.getvalue())
+    assert sb_data["workContext"] is False
+    assert sb_data["modeBadge"] == "LOCAL"
+    assert "workstation-key" not in sb_data["line"]
+
+    # 2. Spy transport that fails immediately if ANY byte is ever sent over HTTP
+    leaked_calls: list[str] = []
+
+    def forbid_network_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        leaked_calls.append(f"{req.get_method()} {req.full_url}")
+        raise AssertionError(f"PRIVACY LEAK FROM LOCAL REPO: {req.get_method()} {req.full_url}")
+
+    # 3. Every Bridge network/telemetry CLI command in LOCAL repo must refuse upload AND never spool
+    for blocked_argv in (
+        ["seam", "win", "Reduced server idle power draw by 43%"],
+        ["handoff", "Completed personal homelab tunnel setup"],
+        ["scratchpad", "write", "homelab", "Personal server notes"],
+        ["context", "--json"],
+        ["decide", "list"],
+        ["tasks", "list"],
+    ):
+        buf = NonTTYBuffer()
+        code = run_cli(
+            blocked_argv,
+            cwd=local_repo,
+            env={**env, "BRIDGE_OFFLINE": "1"},
+            stdout_stream=buf,
+            transport=forbid_network_transport,
+        )
+        assert code == EXIT_AUTH_MISSING, f"Expected EXIT_AUTH_MISSING for {blocked_argv}, got {code}"
+        payload = json.loads(buf.getvalue())
+        assert payload["ok"] is False
+        assert payload["error"] == "LOCAL_WORKSPACE_UNBOUND"
+        assert payload["localOnly"] is True
+
+    assert leaked_calls == []
+    assert not (local_repo / ".bridge" / "spool.jsonl").exists()
+
+    # 4. Local-only concurrency commands (`claim`, `claims`, `release`) work locally with zero HTTP calls
+    for local_ok_argv in (
+        ["claim", "docker/**", "--ttl", "15m"],
+        ["claims"],
+        ["release", "--all"],
+    ):
+        buf_ok = NonTTYBuffer()
+        assert (
+            run_cli(
+                local_ok_argv,
+                cwd=local_repo,
+                env=env,
+                stdout_stream=buf_ok,
+                transport=forbid_network_transport,
+            )
+            == EXIT_OK
+        )
+    assert leaked_calls == []
+
+    # 5. MCP server (`bridge://context` + `bridge_seam` + `bridge_context_pull`) in LOCAL repo never hits network
+    local_client = BridgeClient(local_cfg, transport=forbid_network_transport, env=env)
+    mcp_res = handle_jsonrpc_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": "bridge://context"}},
+        config=local_cfg,
+        client=local_client,
+    )
+    ctx_snapshot = json.loads(mcp_res["result"]["contents"][0]["text"])
+    assert ctx_snapshot["workContext"] is False
+    assert ctx_snapshot["mode"] == "LOCAL"
+
+    mcp_seam = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "bridge_seam", "arguments": {"tag": "win", "summary": "Should not leak"}},
+        },
+        config=local_cfg,
+        client=local_client,
+    )
+    assert mcp_seam["result"]["isError"] is True
+    assert "LOCAL_WORKSPACE_UNBOUND" in mcp_seam["result"]["content"][0]["text"]
+    assert leaked_calls == []
+
+    # 6. Explicit `--cwd` flag works and binding via `brg init` promotes a repo to WORK
+    out_cwd = NonTTYBuffer()
+    assert run_cli(["status-bar", "--json", "--cwd", str(local_repo)], cwd=tmp_path, env=env, stdout_stream=out_cwd) == EXIT_OK
+    assert json.loads(out_cwd.getvalue())["modeBadge"] == "LOCAL"
+
+
+

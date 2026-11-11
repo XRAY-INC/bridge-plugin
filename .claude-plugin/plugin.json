@@ -1,6 +1,6 @@
 {
   "name": "bridge",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Connect AI coding agents (Claude Code, Claude Desktop, OpenAI Codex, Cursor, Windsurf, Gemini CLI) to Bridge (https://bridge.xray.tech) for 7-day organizational context gating (🟢/🟡/🔴 Alignment Check), session-reloaded Organization Custom Instructions, Scoped Morning Briefs & 72h corrections, 1-Click Decisions, interstitial seams, cross-worktree scope claims, local savepoints/undo, frozen file locks, and shared-login teammate identity.",
   "author": {
     "name": "Bridge Engineering",

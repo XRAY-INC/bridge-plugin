@@ -318,6 +318,7 @@ def test_cli_bridge_context_and_briefs_commands(tmp_path: Path) -> None:
     """Verify `brg context --days 7 --team platform-eng --json` and `brg briefs --json` CLI execution."""
     cfg, client = _make_mcp_fixture(tmp_path)
     env = {
+        "BRIDGE_ORG_ID": "org_northstar",
         "BRIDGE_API_KEY": "xrkey_v1.mcp_test_token",
         "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"),
     }
@@ -493,6 +494,7 @@ def test_context_fallback_alignment_green_yellow_red_and_edge_cases(tmp_path: Pa
         return 200, json.dumps({"ok": True, "tasks": []}).encode("utf-8")
 
     env = {
+        "BRIDGE_ORG_ID": "org_northstar",
         "BRIDGE_API_KEY": "xrkey_v1.mcp_test_token",
         "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"),
     }
@@ -533,6 +535,7 @@ def test_custom_instructions_session_hydration_cli_and_mcp(tmp_path: Path) -> No
         encoding="utf-8",
     )
     env = {
+        "BRIDGE_ORG_ID": "org_northstar",
         "BRIDGE_API_KEY": "xrkey_v1.mcp_test_token",
         "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"),
     }

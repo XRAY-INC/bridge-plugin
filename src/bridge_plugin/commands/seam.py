@@ -202,6 +202,11 @@ def handle_seam_log(
     elif resp.ok:
         seam_id = seam_obj.get("id", "ok") if seam_obj else "ok"
         human = f"[{tag}] ({seam_id}) {repo}:{branch}" + (f" [task:{task_id}]" if task_id else "") + f" — {summary}"
+    elif resp.error == "LOCAL_WORKSPACE_UNBOUND":
+        human = (
+            f"[LOCAL — NOT SENT TO BRIDGE] '{repo}' is in LOCAL mode (no .bridge.json). "
+            "Bridge never logs unbound local sessions."
+        )
     else:
         human = f"Error logging seam: {resp.error or resp.data.get('message') or 'unknown error'}"
 

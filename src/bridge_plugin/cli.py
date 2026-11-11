@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--url", help="Override Bridge API URL.")
     parser.add_argument("--repo", help="Override repository slug (owner/name).")
+    parser.add_argument("--cwd", dest="global_cwd", help="Run Bridge CLI against a target workspace directory.")
     parser.add_argument("--api-key", dest="global_api_key", help="Override Bridge API key.")
     parser.add_argument("--user", dest="global_user", help="Override active teammate alias or email for this command.")
 
@@ -630,10 +631,11 @@ def run_cli(
     args_list = list(argv) if argv is not None else sys.argv[1:]
     force_json = "--json" in args_list
 
-    # Strip --json, --internal/--agency, and hoist --org / --agency-org / --user from subparser positions
+    # Strip --json, --internal/--agency, and hoist --org / --agency-org / --user / --cwd from subparser positions
     explicit_org: str | None = None
     explicit_agency_org: str | None = None
     explicit_user: str | None = None
+    explicit_cwd: str | None = None
     force_internal = False
     cleaned_args: list[str] = []
     idx = 0
@@ -670,6 +672,14 @@ def run_cli(
             explicit_user = token.split("=", 1)[1]
             idx += 1
             continue
+        if token == "--cwd" and idx + 1 < len(args_list):
+            explicit_cwd = args_list[idx + 1]
+            idx += 2
+            continue
+        if token.startswith("--cwd="):
+            explicit_cwd = token.split("=", 1)[1]
+            idx += 1
+            continue
         cleaned_args.append(token)
         idx += 1
 
@@ -690,9 +700,10 @@ def run_cli(
         args.agency_org = explicit_agency_org
     if explicit_user is not None:
         args.global_user = explicit_user
+    effective_cwd = Path(explicit_cwd).resolve() if explicit_cwd else cwd
 
     config = resolve_config(
-        cwd=cwd,
+        cwd=effective_cwd,
         env=env,
         explicit_org=getattr(args, "org", None),
         explicit_agency_org=getattr(args, "agency_org", None),

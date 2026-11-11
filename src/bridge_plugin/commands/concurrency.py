@@ -108,9 +108,9 @@ def handle_claim(
                         )
                         return EXIT_CONCURRENCY_BLOCK
 
-    # 2. If authenticated/bound and online, synchronize with /api/v1/fleet/leases
+    # 2. If work-bound and authenticated/bound, synchronize with /api/v1/fleet/leases
     remote_lease: dict[str, Any] | None = None
-    if config.is_authenticated or config.is_bound:
+    if config.is_work_context and (config.is_authenticated or config.is_bound):
         body: dict[str, Any] = {
             "action": "claim",
             "repository": repo,
@@ -214,7 +214,7 @@ def handle_release(
     save_local_claims(config, kept)
 
     remote_released = 0
-    if config.is_authenticated or config.is_bound:
+    if config.is_work_context and (config.is_authenticated or config.is_bound):
         # --all means all of this agent's claims. Clearing other agents' claims takes --everyone.
         body: dict[str, Any] = {"action": "release", "repository": repo}
         if lease_id:
@@ -276,7 +276,7 @@ def handle_claims_list(
     local_claims = load_local_claims(config)
     remote_leases: list[dict[str, Any]] = []
 
-    if config.is_authenticated or config.is_bound:
+    if config.is_work_context and (config.is_authenticated or config.is_bound):
         params: dict[str, Any] = {}
         if getattr(args, "repo", None) or config.repository:
             params["repository"] = getattr(args, "repo", None) or config.repository

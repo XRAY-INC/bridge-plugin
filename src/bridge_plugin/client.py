@@ -87,8 +87,35 @@ class BridgeClient:
         idempotency_key: str | None = None,
         spool_on_offline: bool = False,
         require_auth: bool = True,
+        allow_unbound: bool = False,
     ) -> BridgeResponse:
-        """Perform an HTTP request to Bridge or spool mutations when offline."""
+        """Perform an HTTP request to Bridge or spool mutations when offline.
+
+        Hard Privacy Firewall: Whenever `config.is_work_context` is False (`LOCAL` mode) and
+        `allow_unbound` is False, refuse ALL network requests and offline spooling so unbound
+        personal/local directories can NEVER leak session telemetry to a Bridge server.
+        """
+        if not self.config.is_work_context and not allow_unbound:
+            repo_label = self.config.repository or self.config.workspace_root.name
+            return BridgeResponse(
+                ok=False,
+                status_code=0,
+                exit_code=EXIT_AUTH_MISSING,
+                data={
+                    "ok": False,
+                    "localOnly": True,
+                    "mode": "LOCAL",
+                    "repository": repo_label,
+                    "error": "LOCAL_WORKSPACE_UNBOUND",
+                    "message": (
+                        f"Current directory '{repo_label}' is LOCAL (not bound to Bridge via .bridge.json). "
+                        "Refusing to transmit local session data to Bridge. "
+                        "Run 'brg init' only if this repository belongs to a Bridge workspace."
+                    ),
+                },
+                error="LOCAL_WORKSPACE_UNBOUND",
+            )
+
         if require_auth and not self.config.is_authenticated and not self.config.is_bound:
             return BridgeResponse(
                 ok=False,
@@ -323,6 +350,22 @@ class BridgeClient:
         """Idempotently replay queued mutations from .bridge/spool.jsonl."""
         entries = self.read_spool()
         spool_file = self.config.spool_path
+        if not self.config.is_work_context:
+            return BridgeResponse(
+                ok=False,
+                status_code=0,
+                exit_code=EXIT_AUTH_MISSING,
+                data={
+                    "ok": False,
+                    "localOnly": True,
+                    "mode": "LOCAL",
+                    "error": "LOCAL_WORKSPACE_UNBOUND",
+                    "flushedCount": 0,
+                    "remainingCount": len(entries),
+                    "message": "Refusing to flush spool in a LOCAL (unbound) directory.",
+                },
+                error="LOCAL_WORKSPACE_UNBOUND",
+            )
         if not entries:
             return BridgeResponse(
                 ok=True,

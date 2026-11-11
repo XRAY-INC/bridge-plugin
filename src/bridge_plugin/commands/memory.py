@@ -206,34 +206,37 @@ def handle_handoff(
         spool_on_offline=True,
     )
 
-    # Also project to working-memory scratchpad
-    scratch_key = compute_idempotency_key(
-        org_id=config.organization_id or "",
-        repo=repo,
-        branch=branch,
-        commit_sha=commit_sha,
-        tag=f"SCRATCHPAD:{topic}",
-        summary=summary,
-    )
-    scratch_body: dict[str, Any] = {
-        "topic": topic,
-        "body": summary,
-        "bodyMarkdown": summary,
-        "repository": repo,
-        "gitBranch": branch,
-        "agentId": runtime["agentId"],
-    }
-    if config.organization_id:
-        scratch_body["organizationId"] = config.organization_id
-    if config.user_email:
-        scratch_body["updatedByEmail"] = config.user_email
-    client.request(
-        "POST",
-        "/api/v1/fleet/scratchpad",
-        json_body=scratch_body,
-        idempotency_key=scratch_key,
-        spool_on_offline=True,
-    )
+    if seam_resp.ok or seam_resp.spooled:
+        # Also project to working-memory scratchpad ONLY when workspace is bound/allowed
+        scratch_key = compute_idempotency_key(
+            org_id=config.organization_id or "",
+            repo=repo,
+            branch=branch,
+            commit_sha=commit_sha,
+            tag=f"SCRATCHPAD:{topic}",
+            summary=summary,
+        )
+        scratch_body: dict[str, Any] = {
+            "topic": topic,
+            "body": summary,
+            "bodyMarkdown": summary,
+            "repository": repo,
+            "gitBranch": branch,
+            "agentId": runtime["agentId"],
+        }
+        if isinstance(seam_resp.data.get("seam"), dict) and seam_resp.data["seam"].get("id"):
+            scratch_body["sourceSeamId"] = str(seam_resp.data["seam"]["id"])
+        if config.organization_id:
+            scratch_body["organizationId"] = config.organization_id
+        if config.user_email:
+            scratch_body["updatedByEmail"] = config.user_email
+        client.request(
+            "POST",
+            "/api/v1/fleet/scratchpad",
+            json_body=scratch_body,
+            idempotency_key=scratch_key,
+            spool_on_offline=True,
+        )
 
     from .statusbar import format_status_bar_line
 
@@ -252,7 +255,12 @@ def handle_handoff(
         if seam_resp.spooled
         else f"[HANDOFF] ({topic}): {summary}"
         if seam_resp.ok
-        else f"Error recording handoff: {seam_resp.error}"
+        else (
+            f"[LOCAL — NOT SENT TO BRIDGE] '{repo}' is in LOCAL mode (no .bridge.json). "
+            "Bridge never logs unbound local handoffs."
+            if seam_resp.error == "LOCAL_WORKSPACE_UNBOUND"
+            else f"Error recording handoff: {seam_resp.error}"
+        )
     )
     emit_output(out, [human, *([sb_line] if sb_line else [])], force_json=force_json, stdout_stream=stdout_stream)
     return seam_resp.exit_code

@@ -183,6 +183,7 @@ class BridgeConfig:
     agency_organization_id: str | None = None
     agency_api_key: str | None = None
     is_internal_target: bool = False
+    work_bound: bool = False
     config_path: Path | None = None
     credentials_path: Path = field(default_factory=lambda: Path.home() / ".config" / "bridge" / "credentials.json")
     workspace_root: Path = field(default_factory=Path.cwd)
@@ -209,12 +210,31 @@ class BridgeConfig:
             agency_organization_id=self.agency_organization_id,
             agency_api_key=self.agency_api_key,
             is_internal_target=True,
+            work_bound=self.work_bound,
             config_path=self.config_path,
             credentials_path=self.credentials_path,
             workspace_root=self.workspace_root,
             auth_source=self.auth_source,
             env=self.env,
         )
+
+    @property
+    def is_work_context(self) -> bool:
+        """Return True ONLY when this directory is explicitly bound to a Bridge workspace.
+
+        Global ~/.config/bridge/credentials.json or global API keys NEVER turn an unbound
+        personal/local folder into a WORK context.
+        """
+        if self.work_bound:
+            return True
+        if self.config_path is not None and self.config_path.is_file():
+            return True
+        if self.project_name or self.client_name:
+            return True
+        for key in ("BRIDGE_ORG_ID", "WORKSPACE_ORG_ID", "BRIDGE_PROJECT", "BRIDGE_CLIENT"):
+            if self.env.get(key, "").strip():
+                return True
+        return False
 
     @property
     def is_authenticated(self) -> bool:
@@ -494,14 +514,26 @@ def resolve_config(
     cred_path = get_credentials_path(env=environ)
     workspaces_keyring = creds.get("workspaces") if isinstance(creds.get("workspaces"), dict) else {}
 
-    # 1. Resolve Organization ID & Agency Organization ID
+    # Determine whether this directory is explicitly bound to a Bridge WORK context.
+    # Unbound personal/local directories MUST stay LOCAL even if ~/.config/bridge/credentials.json exists.
+    work_bound = bool(
+        (cfg_file is not None and cfg_file.is_file())
+        or (explicit_org and str(explicit_org).strip())
+        or (explicit_agency_org and str(explicit_agency_org).strip())
+        or any(
+            environ.get(k, "").strip()
+            for k in ("BRIDGE_ORG_ID", "WORKSPACE_ORG_ID", "BRIDGE_PROJECT", "BRIDGE_CLIENT")
+        )
+    )
+
+    # 1. Resolve Organization ID & Agency Organization ID (only inherit credentials org when work_bound)
     org_id = (
         explicit_org
         or environ.get("BRIDGE_ORG_ID")
         or environ.get("WORKSPACE_ORG_ID")
         or file_data.get("organizationId")
         or file_data.get("orgId")
-        or creds.get("organizationId")
+        or (creds.get("organizationId") if work_bound else None)
         or None
     )
     if isinstance(org_id, str):
@@ -512,7 +544,7 @@ def resolve_config(
         or environ.get("BRIDGE_AGENCY_ORG_ID")
         or file_data.get("agencyOrganizationId")
         or file_data.get("upstreamOrganizationId")
-        or creds.get("agencyOrganizationId")
+        or (creds.get("agencyOrganizationId") if work_bound else None)
         or None
     )
     if isinstance(agency_org_id, str):
@@ -682,6 +714,7 @@ def resolve_config(
         team_roster=combined_roster,
         agency_organization_id=agency_org_id,
         agency_api_key=agency_api_key,
+        work_bound=work_bound,
         config_path=cfg_file,
         credentials_path=cred_path,
         workspace_root=workspace_root,
