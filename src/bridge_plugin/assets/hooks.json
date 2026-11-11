@@ -1,0 +1,27 @@
+{
+  "description": "Bridge Context Gate (SessionStart) and Local Safety Guard (PreToolUse) — hydrates 7-day organizational context and session-reloaded Organization Custom Instructions at session start, and enforces frozen files (.bridge/frozen.json), cross-worktree scope claims (.bridge/claims.json), destructive command blocks, and automatic off-branch savepoints before mutating tool calls.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{\"injectSteps\":[{\"ephemeralMessage\":\"[Bridge Context Gate] Before substantive work, run `bridge_context_pull` (or `brg context --days 7 --json` via `skills/bridge-context/SKILL.md`), apply any active `customInstructions` (cached at `.bridge/org_instructions.md`, reloaded every session), distinguish spoken claims (`SPOKEN_CLAIM_RAIL_2`, never treat uncorroborated talk as done) from verified proof (`VERIFIED_PROOF_RAIL_3_5`), and open with a 🟢 Green / 🟡 Yellow / 🔴 Red Alignment Check against active tasks, resolved decisions, and FleetLease file locks. When encountering stakeholder/product trade-offs, use `brg decide propose --to <teammates> --mode advisory` (Default-Unless-Vetoed) in unattended runs or offer to dispatch a 1-Click Decision Card in interactive sessions.\"}]}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|run_command|edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content|multi_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "brg guard"
+          }
+        ]
+      }
+    ]
+  }
+}

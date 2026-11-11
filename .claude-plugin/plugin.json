@@ -1,0 +1,39 @@
+{
+  "name": "bridge",
+  "version": "0.7.0",
+  "description": "Connect AI coding agents (Claude Code, Claude Desktop, OpenAI Codex, Cursor, Windsurf, Gemini CLI) to Bridge (https://bridge.xray.tech) for 7-day organizational context gating (🟢/🟡/🔴 Alignment Check), session-reloaded Organization Custom Instructions, Scoped Morning Briefs & 72h corrections, 1-Click Decisions, interstitial seams, cross-worktree scope claims, local savepoints/undo, frozen file locks, and shared-login teammate identity.",
+  "author": {
+    "name": "Bridge Engineering",
+    "email": "engineering@xray.tech",
+    "url": "https://bridge.xray.tech"
+  },
+  "homepage": "https://bridge.xray.tech",
+  "repository": "https://github.com/XRAY-INC/bridge-plugin",
+  "license": "SEE LICENSE IN LICENSE",
+  "keywords": [
+    "bridge",
+    "agentskills",
+    "context-gate",
+    "custom-instructions",
+    "governance",
+    "decisions",
+    "morning-briefs",
+    "seam-ledger",
+    "multi-agent",
+    "scope-claims",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "commands": [
+    "./commands/bridge-status.md",
+    "./commands/bridge-decide.md",
+    "./commands/bridge-handoff.md"
+  ],
+  "mcpServers": {
+    "bridge": {
+      "command": "bridge-mcp",
+      "args": []
+    }
+  }
+}

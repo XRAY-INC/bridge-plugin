@@ -1,0 +1,44 @@
+Bridge Customer SDK License
+
+Copyright (c) 2026 XRAY, Inc. All rights reserved.
+
+1. Grant of License
+Subject to the terms and conditions of this License and any applicable Bridge
+Subscription Agreement or Master Services Agreement with XRAY, Inc. ("XRAY"),
+XRAY hereby grants to customers, authorized workspace members, and prospective
+evaluators of the Bridge platform ("Licensee") a worldwide, royalty-free,
+non-exclusive, non-transferable, revocable license to:
+
+  (a) install, inspect, configure, and execute this software development kit,
+      command-line interface, Model Context Protocol (MCP) server, hooks, and
+      agent skill definitions (collectively, the "SDK"); and
+  (b) modify and adapt the SDK for Licensee's internal developer workflows,
+      continuous integration pipelines, and AI agent harnesses solely in
+      connection with Licensee's authorized use of the Bridge service
+      (https://bridge.xray.tech or an XRAY-authorized deployment).
+
+2. Restrictions
+Except as expressly permitted in Section 1 or by prior written consent from
+XRAY, Licensee may not:
+
+  (a) sell, rent, lease, sublicense, redistribute, or offer the SDK (or any
+      derivative work thereof) as a standalone commercial product, hosted
+      managed service, or third-party marketplace offering;
+  (b) use the SDK, its protocol schemas, or its bundled agent skill definitions
+      to design, build, train, benchmark, or operate a competing commercial
+      product or service; or
+  (c) remove, obscure, or alter any copyright, trademark, attribution, or
+      license notices contained in the SDK.
+
+3. Ownership
+The SDK is licensed, not sold. XRAY and its licensors retain all right, title,
+and interest, including all intellectual property rights, in and to the SDK.
+
+4. Disclaimer of Warranty & Limitation of Liability
+THE SDK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL XRAY OR ITS
+CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES, OR ANY LOSS OF DATA, REVENUE, OR PROFITS, ARISING OUT OF
+OR IN CONNECTION WITH THE SDK OR THE USE OR OTHER DEALINGS IN THE SDK, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.

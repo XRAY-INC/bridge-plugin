@@ -1,0 +1,36 @@
+{
+  "name": "bridge-plugin",
+  "owner": {
+    "name": "XRAY-INC",
+    "email": "engineering@xray.tech"
+  },
+  "metadata": {
+    "description": "Official Cross-Agent Skills (agentskills.io), CLI (bridge / brg), and MCP plugin catalog for Bridge (https://bridge.xray.tech)",
+    "version": "0.7.0"
+  },
+  "plugins": [
+    {
+      "name": "bridge",
+      "source": "./",
+      "description": "Universal Agent Context Gate (bridge context / bridge_context_pull), Organization Custom Instructions, Scoped Morning Briefs (bridge_brief_latest), 1-Click Decisions, seam ledger, and cross-worktree scope claims across Claude Code, Claude Desktop, OpenAI Codex, Cursor, Windsurf, and Gemini CLI.",
+      "version": "0.7.0",
+      "author": {
+        "name": "Bridge Engineering",
+        "email": "engineering@xray.tech"
+      },
+      "homepage": "https://bridge.xray.tech",
+      "repository": "https://github.com/XRAY-INC/bridge-plugin",
+      "license": "SEE LICENSE IN LICENSE",
+      "category": "productivity",
+      "skills": [
+        "./skills/bridge-context",
+        "./skills/bridge-cli",
+        "./skills/bridge-api",
+        "./skills/bridge-updates",
+        "./skills/bridge-afk",
+        "./skills/bridge"
+      ],
+      "hooks": "./hooks/hooks.json"
+    }
+  ]
+}
