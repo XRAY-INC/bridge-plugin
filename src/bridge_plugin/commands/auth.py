@@ -19,6 +19,7 @@ from ..config import (
     load_local_claims,
     load_user_credentials,
     normalize_team_roster,
+    resolve_config,
     resolve_user_identity,
     save_cached_roster,
     save_session_user,
@@ -492,26 +493,52 @@ def handle_auth_logout(
 
 
 def _ignore_local_state(root: Path) -> bool:
-    """Keeps Bridge's per-machine state out of commits. Returns whether .gitignore changed."""
+    """Keep Bridge's per-machine state out of commits while allowing .bridge/bridge.json to be tracked."""
     gitignore = root / ".gitignore"
     if not gitignore.exists() and not (root / ".git").exists():
         return False
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    if any(line.strip().strip("/") == ".bridge" for line in existing.splitlines()):
+    lines = existing.splitlines()
+    has_wildcard = any(line.strip() == ".bridge/*" for line in lines)
+    has_unignore = any(line.strip() == "!.bridge/bridge.json" for line in lines)
+    if has_wildcard and has_unignore:
         return False
+
+    upgraded_lines: list[str] = []
+    replaced_legacy = False
+    for line in lines:
+        if line.strip().strip("/") == ".bridge":
+            if not replaced_legacy:
+                upgraded_lines.extend(
+                    [
+                        ".bridge/*",
+                        "!.bridge/bridge.json",
+                        "!.bridge/config.json",
+                    ]
+                )
+                replaced_legacy = True
+        else:
+            upgraded_lines.append(line)
+
+    if replaced_legacy:
+        gitignore.write_text("\n".join(upgraded_lines) + "\n", encoding="utf-8")
+        return True
+
+    block = ".bridge/*\n!.bridge/bridge.json\n!.bridge/config.json\n"
     separator = "" if not existing or existing.endswith("\n") else "\n"
-    gitignore.write_text(f"{existing}{separator}.bridge/\n", encoding="utf-8")
+    gitignore.write_text(f"{existing}{separator}{block}", encoding="utf-8")
     return True
 
 
 def handle_init(
     args: Any,
     config: BridgeConfig,
+    client: BridgeClient | None = None,
     *,
     force_json: bool = False,
     stdout_stream: Any = None,
 ) -> int:
-    """Bind the current repository to Bridge by writing .bridge.json."""
+    """Bind the current repository to Bridge by writing .bridge/bridge.json (and syncing project metadata if set)."""
     creds_env = {"BRIDGE_CREDENTIALS_PATH": str(config.credentials_path)} if config.credentials_path else config.env
     saved_creds = load_user_credentials(env=creds_env)
     org_id = (
@@ -576,6 +603,54 @@ def handle_init(
             if (root / candidate_dir).is_dir():
                 _install_skill_bundle(root / candidate_dir / "skills", auto_setup_files)
 
+    # Best-effort server sync when --project / projectName is bound so the Bridge project record
+    # immediately reflects repositoryFullName and clientName too.
+    synced_project_id: str | None = None
+    project_synced = False
+    offline_mode = str(config.env.get("BRIDGE_OFFLINE", "")).strip().lower() in ("1", "true", "yes")
+    if project_name and not offline_mode:
+        try:
+            merged_env = dict(config.env)
+            if config.credentials_path:
+                merged_env["BRIDGE_CREDENTIALS_PATH"] = str(config.credentials_path)
+            bound_cfg = resolve_config(
+                cwd=config.workspace_root,
+                env=merged_env,
+                explicit_org=org_id,
+                explicit_url=api_url,
+                explicit_repo=repo,
+            )
+            has_custom_transport = client is not None and getattr(client, "_transport", None) is not None
+            has_signed_key = bool(decode_api_key_claims(bound_cfg.api_key))
+            if bound_cfg.is_authenticated and (has_custom_transport or has_signed_key):
+                sync_client = BridgeClient(
+                    bound_cfg,
+                    agent_id=client.agent_id if client else "bridge-cli",
+                    timeout=3.0,
+                    transport=client._transport if client else None,
+                    env=merged_env,
+                )
+                proj_body: dict[str, Any] = {
+                    "organizationId": org_id,
+                    "name": project_name,
+                    "repositoryFullName": repo,
+                }
+                if client_name:
+                    proj_body["clientName"] = client_name
+                proj_resp = sync_client.request(
+                    "POST",
+                    "/api/v1/projects",
+                    json_body=proj_body,
+                    spool_on_offline=False,
+                )
+                if proj_resp.ok and isinstance(proj_resp.data.get("project"), dict):
+                    project_synced = True
+                    raw_pid = proj_resp.data["project"].get("id")
+                    if isinstance(raw_pid, str) and raw_pid.strip():
+                        synced_project_id = raw_pid.strip()
+        except Exception:
+            project_synced = False
+
     payload: dict[str, Any] = {
         "ok": True,
         "plugin": "bridge",
@@ -590,6 +665,10 @@ def handle_init(
         payload["projectName"] = project_name
     if client_name:
         payload["clientName"] = client_name
+    if project_synced:
+        payload["projectSynced"] = True
+        if synced_project_id:
+            payload["projectId"] = synced_project_id
     if agency_org_id:
         payload["agencyOrganizationId"] = agency_org_id
     if auto_setup_files:
@@ -602,10 +681,10 @@ def handle_init(
             f"  Organization ID : {org_id}",
             *([f"  Upstream Org    : {agency_org_id}"] if agency_org_id else []),
             f"  Repository      : {repo}",
-            *([f"  Project         : {project_name}"] if project_name else []),
+            *([f"  Project         : {project_name}" + (f" ({synced_project_id})" if synced_project_id else "")] if project_name else []),
             *([f"  Client          : {client_name}"] if client_name else []),
             f"  API URL         : {api_url}",
-            *(["  Git             : Added .bridge/ to .gitignore"] if gitignore_updated else []),
+            *(["  Git             : Updated .gitignore (.bridge/* with !.bridge/bridge.json)"] if gitignore_updated else []),
             "  Next Step       : "
             + ("bridge status" if config.is_authenticated else "bridge auth login --api-key <key>"),
         ],
@@ -613,6 +692,87 @@ def handle_init(
         stdout_stream=stdout_stream,
     )
     return EXIT_OK
+
+
+def handle_projects(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """List or upsert/update Bridge WorkspaceProject records (/api/v1/projects)."""
+    sub = getattr(args, "projects_action", None) or "list"
+    if sub in ("set", "upsert", "update", "bind"):
+        name = (getattr(args, "name", None) or config.project_name or "").strip()
+        if not name:
+            emit_output(
+                {
+                    "ok": False,
+                    "error": "PROJECT_NAME_REQUIRED",
+                    "message": "Provide a project name or bind one via 'brg link --project <name>'.",
+                },
+                "Error: Provide a project name (e.g. 'brg projects set \"Project Name\" --repo my-repo --client \"Client\"').",
+                force_json=force_json,
+                stdout_stream=stdout_stream,
+            )
+            return EXIT_ERROR
+        body: dict[str, Any] = {"name": name}
+        if config.organization_id:
+            body["organizationId"] = config.organization_id
+        if getattr(args, "project_id", None):
+            body["projectId"] = str(args.project_id).strip()
+        if getattr(args, "slug", None):
+            body["slug"] = str(args.slug).strip()
+        repo_val = getattr(args, "repo", None)
+        if repo_val is not None:
+            body["repositoryFullName"] = str(repo_val).strip()
+        elif config.repository:
+            body["repositoryFullName"] = config.repository
+        client_val = getattr(args, "client", None)
+        if client_val is not None:
+            body["clientName"] = str(client_val).strip()
+        elif config.client_name:
+            body["clientName"] = config.client_name
+        if getattr(args, "description", None) is not None:
+            body["description"] = str(args.description)
+
+        resp = client.request("POST", "/api/v1/projects", json_body=body)
+        proj = resp.data.get("project") if isinstance(resp.data.get("project"), dict) else {}
+        human = (
+            f"Updated project '{proj.get('name', name)}' ({proj.get('id', 'ok')}) — "
+            f"repo={proj.get('repositoryFullName') or '-'}, client={proj.get('clientName') or '-'}"
+            if resp.ok
+            else f"Error updating project '{name}': {resp.error}"
+        )
+        emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+        return resp.exit_code
+
+    params: dict[str, Any] = {}
+    if config.organization_id:
+        params["organizationId"] = config.organization_id
+    if getattr(args, "search", None):
+        params["search"] = str(args.search).strip()
+    if getattr(args, "repo", None):
+        params["repo"] = str(args.repo).strip()
+    resp = client.request("GET", "/api/v1/projects", params=params)
+    projects = resp.data.get("projects", []) if isinstance(resp.data.get("projects"), list) else []
+    rows = [
+        [
+            str(p.get("id") or ""),
+            str(p.get("name") or ""),
+            str(p.get("repositoryFullName") or "-"),
+            str(p.get("clientName") or (p.get("description") or "-")[:28]),
+            str(p.get("seamCount", 0)),
+            str(p.get("taskCount", 0)),
+        ]
+        for p in projects
+        if isinstance(p, dict)
+    ]
+    table = format_table(["ID", "NAME", "REPO", "CLIENT", "SEAMS", "TASKS"], rows)
+    emit_output(resp.data, table, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
 
 
 def handle_status(
@@ -1165,7 +1325,7 @@ def handle_setup(
             '  if [ -n "$STATUS_BAR" ]; then\n'
             '    printf "%s\\n" "$STATUS_BAR"\n'
             "  fi\n"
-            '  if [ -f ".bridge.json" ] || [ -f ".workspace-project.json" ]; then\n'
+            '  if [ -f ".bridge/bridge.json" ] || [ -f ".bridge/config.json" ] || [ -f ".bridge.json" ] || [ -f ".workspace-project.json" ]; then\n'
             '    MSG=$(git log -1 --pretty=%s 2>/dev/null)\n'
             '    SHA=$(git rev-parse HEAD 2>/dev/null)\n'
             '    brg seam win "$MSG" --commit "$SHA" >/dev/null 2>&1 || true\n'

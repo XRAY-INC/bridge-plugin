@@ -970,15 +970,44 @@ def _emit_guard_decision(
     allow: bool,
     reason: str | None = None,
     force_json_cli: bool = False,
+    harness_format: str = "claude",
     stdout_stream: Any = None,
 ) -> int:
     stream = stdout_stream if stdout_stream is not None else sys.stdout
+    if harness_format == "antigravity" and not force_json_cli:
+        # Strict Antigravity protojson schema: ONLY {"decision": "allow"|"deny", "reason"?: "..."}
+        if allow:
+            payload: dict[str, Any] = {"decision": "allow"}
+            if reason:
+                payload["reason"] = reason
+            stream.write(json.dumps(payload) + "\n")
+            if hasattr(stream, "flush"):
+                stream.flush()
+            return EXIT_OK
+        deny_msg = reason or "Blocked by Bridge PreToolUse Guard."
+        payload = {"decision": "deny", "reason": deny_msg}
+        stream.write(json.dumps(payload) + "\n")
+        if hasattr(stream, "flush"):
+            stream.flush()
+        return EXIT_CONCURRENCY_BLOCK
+
     if allow:
-        payload: dict[str, Any] = {"decision": "allow"}
-        if reason:
-            payload["reason"] = reason
         if force_json_cli:
-            payload["ok"] = True
+            payload = {
+                "ok": True,
+                "decision": "approve",
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    **({"permissionDecisionReason": reason} if reason else {}),
+                },
+            }
+            if reason:
+                payload["reason"] = reason
+        else:
+            # Claude Code / Codex PreToolUse hook: emit empty JSON `{}` on allow so Zod validation
+            # passes AND Claude Code's normal user permission / auto-mode classifier runs un-bypassed.
+            payload = {}
         stream.write(json.dumps(payload) + "\n")
         if hasattr(stream, "flush"):
             stream.flush()
@@ -986,11 +1015,18 @@ def _emit_guard_decision(
 
     deny_msg = reason or "Blocked by Bridge PreToolUse Guard."
     payload = {
-        "decision": "deny",
+        "decision": "block",
         "reason": deny_msg,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": deny_msg,
+        },
     }
     if force_json_cli:
         payload["ok"] = False
+    elif stdout_stream is None:
+        emit_stderr(deny_msg)
     stream.write(json.dumps(payload) + "\n")
     if hasattr(stream, "flush"):
         stream.flush()
@@ -1099,6 +1135,17 @@ def handle_guard(
             pass
 
     force_json_cli = bool(getattr(args, "json", False)) and not bool(raw_input)
+    is_antigravity_hook = (
+        "toolCall" in event
+        or "workspacePaths" in event
+        or (
+            bool(config.env.get("ANTIGRAVITY_AGENT"))
+            and "tool_name" not in event
+            and "hook_event_name" not in event
+            and not force_json_cli
+        )
+    )
+    harness_format = "antigravity" if is_antigravity_hook else "claude"
     runtime = detect_runtime_context(cwd=config.workspace_root, env=config.env)
     current_agent = runtime["agentId"]
 
@@ -1136,6 +1183,7 @@ def handle_guard(
                         f"Run 'brg unfreeze \"{matched_frozen}\"' if this modification is intentional."
                     ),
                     force_json_cli=force_json_cli,
+                    harness_format=harness_format,
                     stdout_stream=stdout_stream,
                 )
             conflict = _check_other_agent_lease_conflict(config, rel, current_agent)
@@ -1148,6 +1196,7 @@ def handle_guard(
                         f"'{conflict.get('worktreeBranch', 'main')}'). Coordinate or wait for lease release."
                     ),
                     force_json_cli=force_json_cli,
+                    harness_format=harness_format,
                     stdout_stream=stdout_stream,
                 )
 
@@ -1163,7 +1212,12 @@ def handle_guard(
                 )
             except Exception as exc:
                 emit_stderr(f"Auto-savepoint skipped before edit ({rel_first}): {exc}")
-        return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)
+        return _emit_guard_decision(
+            allow=True,
+            force_json_cli=force_json_cli,
+            harness_format=harness_format,
+            stdout_stream=stdout_stream,
+        )
 
     # 2. Shell / Bash execution tools
     bash_tools = {"bash", "run_command", "shell", "execute_command"}
@@ -1180,6 +1234,7 @@ def handle_guard(
                     allow=False,
                     reason=reason,
                     force_json_cli=force_json_cli,
+                    harness_format=harness_format,
                     stdout_stream=stdout_stream,
                 )
 
@@ -1196,6 +1251,16 @@ def handle_guard(
                 )
             except Exception as exc:
                 emit_stderr(f"Auto-savepoint skipped before command: {exc}")
-        return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)
+        return _emit_guard_decision(
+            allow=True,
+            force_json_cli=force_json_cli,
+            harness_format=harness_format,
+            stdout_stream=stdout_stream,
+        )
 
-    return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)
+    return _emit_guard_decision(
+        allow=True,
+        force_json_cli=force_json_cli,
+        harness_format=harness_format,
+        stdout_stream=stdout_stream,
+    )

@@ -104,7 +104,10 @@ def test_init_uses_the_workspace_in_the_key_and_ignores_local_state(tmp_path: Pa
     out = NonTTYBuffer()
     assert run_cli(["init", "--repo", "acme/api"], cwd=tmp_path, env=env, stdout_stream=out) == EXIT_OK
     assert json.loads(out.getvalue())["organizationId"] == "org_from_key"
-    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "node_modules\n.bridge/\n"
+    assert (
+        (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        == "node_modules\n.bridge/*\n!.bridge/bridge.json\n!.bridge/config.json\n"
+    )
 
     # Running it again changes nothing.
     out_again = NonTTYBuffer()

@@ -657,3 +657,68 @@ def test_custom_instructions_session_hydration_cli_and_mcp(tmp_path: Path) -> No
     )
     assert json.loads(out_clear.getvalue())["cleared"] is True
 
+
+def test_mcp_bridge_seam_supports_historical_and_created_at(tmp_path: Path) -> None:
+    """Verify MCP bridge_seam forwards created_at and historical flags on log and edit."""
+    cfg, _ = _make_mcp_fixture(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    def seam_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        payload = json.loads(req.data.decode("utf-8")) if req.data else {}
+        captured.append({"method": req.get_method(), "url": req.full_url, "body": payload})
+        return 201, json.dumps(
+            {"ok": True, "seam": {"id": "seam_hist_1", **payload}}
+        ).encode("utf-8")
+
+    mcp_client = BridgeClient(cfg, agent_id="claude-code", transport=seam_transport)
+    res_log = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/call",
+            "params": {
+                "name": "bridge_seam",
+                "arguments": {
+                    "action": "log",
+                    "tag": "win",
+                    "summary": "Shipped v1 billing reconciliation",
+                    "created_at": "2026-10-12",
+                    "historical": True,
+                },
+            },
+        },
+        config=cfg,
+        client=mcp_client,
+    )
+    log_payload = json.loads(res_log["result"]["content"][0]["text"])
+    assert log_payload["ok"] is True
+    assert log_payload["historical"] is True
+    assert log_payload["createdAt"] == "2026-10-12T12:00:00Z"
+    assert captured[-1]["body"]["createdAt"] == "2026-10-12T12:00:00Z"
+    assert captured[-1]["body"]["historical"] is True
+
+    res_edit = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/call",
+            "params": {
+                "name": "bridge_seam",
+                "arguments": {
+                    "action": "edit",
+                    "seam_id": "seam_hist_1",
+                    "created_at": "2026-10-10",
+                    "historical": True,
+                },
+            },
+        },
+        config=cfg,
+        client=mcp_client,
+    )
+    edit_payload = json.loads(res_edit["result"]["content"][0]["text"])
+    assert edit_payload["ok"] is True
+    assert captured[-1]["method"] == "PATCH"
+    assert captured[-1]["body"]["createdAt"] == "2026-10-10T12:00:00Z"
+    assert captured[-1]["body"]["historical"] is True
+
+

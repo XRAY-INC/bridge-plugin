@@ -238,7 +238,7 @@ def test_freeze_unfreeze_and_pre_tool_use_guard(tmp_path: Path) -> None:
     freeze_data = json.loads(out_freeze.getvalue())
     assert "prisma/migrations/**" in freeze_data["frozenGlobs"]
 
-    # 2. `brg guard` denies Edit on frozen file
+    # 2. `brg guard` denies Edit on frozen file (valid Claude Code PreToolUse block JSON)
     in_frozen = io.StringIO(
         json.dumps(
             {
@@ -251,7 +251,8 @@ def test_freeze_unfreeze_and_pre_tool_use_guard(tmp_path: Path) -> None:
     code_frozen = run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=in_frozen, stdout_stream=out_guard_frozen)
     assert code_frozen == EXIT_CONCURRENCY_BLOCK
     guard_frozen_res = json.loads(out_guard_frozen.getvalue())
-    assert guard_frozen_res["decision"] == "deny"
+    assert guard_frozen_res["decision"] == "block"
+    assert guard_frozen_res["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "prisma/migrations/**" in guard_frozen_res["reason"]
 
     # 3. Seed an active claim held by ANOTHER agent (`cursor`) on `src/locked/**`
@@ -284,7 +285,8 @@ def test_freeze_unfreeze_and_pre_tool_use_guard(tmp_path: Path) -> None:
     )
     assert code_conflict == EXIT_CONCURRENCY_BLOCK
     guard_conflict_res = json.loads(out_guard_conflict.getvalue())
-    assert guard_conflict_res["decision"] == "deny"
+    assert guard_conflict_res["decision"] == "block"
+    assert guard_conflict_res["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "cursor" in guard_conflict_res["reason"]
 
     # 4. `brg guard` denies destructive Bash commands (`git reset --hard`, `gh pr merge --admin`)
@@ -294,9 +296,11 @@ def test_freeze_unfreeze_and_pre_tool_use_guard(tmp_path: Path) -> None:
         )
         out_bash = NonTTYBuffer()
         assert run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=in_bash, stdout_stream=out_bash) == EXIT_CONCURRENCY_BLOCK
-        assert json.loads(out_bash.getvalue())["decision"] == "deny"
+        denied_bash = json.loads(out_bash.getvalue())
+        assert denied_bash["decision"] == "block"
+        assert denied_bash["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    # 5. `brg guard` allows safe edit on `src/app.py` and auto-creates a pre_edit savepoint
+    # 5. `brg guard` allows safe edit on `src/app.py`, emits `{}` for Claude Code Zod compliance, and auto-creates a pre_edit savepoint
     in_ok = io.StringIO(
         json.dumps(
             {
@@ -307,7 +311,7 @@ def test_freeze_unfreeze_and_pre_tool_use_guard(tmp_path: Path) -> None:
     )
     out_ok = NonTTYBuffer()
     assert run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=in_ok, stdout_stream=out_ok) == EXIT_OK
-    assert json.loads(out_ok.getvalue())["decision"] == "allow"
+    assert json.loads(out_ok.getvalue()) == {}
 
     out_list_sp = NonTTYBuffer()
     assert run_cli(["savepoint", "list"], cwd=tmp_path, env=env, stdout_stream=out_list_sp) == EXIT_OK

@@ -61,6 +61,8 @@ def assert_clean_room_tree(repo_root: Path) -> None:
 
     assert len(candidates) >= 25
     assert not (repo_root / ".bridge.json").exists(), ".bridge.json must not be tracked in public SDK"
+    assert not (repo_root / ".bridge" / "bridge.json").exists(), ".bridge/bridge.json must not be tracked in public SDK"
+    assert not (repo_root / ".bridge" / "config.json").exists(), ".bridge/config.json must not be tracked in public SDK"
 
     token_re = re.compile(r"[a-z0-9_@.-]+")
     for file_path in candidates:
@@ -231,6 +233,32 @@ def test_config_backward_compatibility_and_env_precedence(tmp_path: Path) -> Non
     assert cfg_primary.api_key == "xrkey_v1.primary_token_99999"
     assert cfg_primary.auth_source == "env:BRIDGE_API_KEY"
 
+    # Canonical .bridge/bridge.json takes precedence over legacy root .bridge.json AND keeps workspace_root at tmp_path
+    nested_cfg = tmp_path / ".bridge" / "bridge.json"
+    nested_cfg.parent.mkdir(parents=True, exist_ok=True)
+    nested_cfg.write_text(
+        json.dumps(
+            {
+                "plugin": "bridge",
+                "organizationId": "org_nested_canonical",
+                "apiUrl": "https://bridge.xray.tech",
+                "repository": "northstar/canonical-app",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg_canonical = resolve_config(
+        cwd=tmp_path,
+        env={
+            "BRIDGE_API_KEY": "xrkey_v1.primary_token_99999",
+            "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+        },
+    )
+    assert cfg_canonical.organization_id == "org_nested_canonical"
+    assert cfg_canonical.repository == "northstar/canonical-app"
+    assert cfg_canonical.workspace_root == tmp_path.resolve()
+    assert cfg_canonical.state_path == tmp_path.resolve() / ".bridge" / "state.json"
+
 
 def test_auth_init_status_and_setup_commands(tmp_path: Path) -> None:
     """Verify semantic exit code 3 when unconfigured, then auth login, init, status, and setup."""
@@ -256,7 +284,7 @@ def test_auth_init_status_and_setup_commands(tmp_path: Path) -> None:
     assert code_login == EXIT_OK
     assert cred_file.is_file()
 
-    # 3. Init repository (.bridge.json)
+    # 3. Init repository (.bridge/bridge.json)
     out_init = FakeTTYBuffer(tty=False)
     code_init = run_cli(
         ["init", "--org", "org_acme", "--repo", "acme/api"],
@@ -265,7 +293,8 @@ def test_auth_init_status_and_setup_commands(tmp_path: Path) -> None:
         stdout_stream=out_init,
     )
     assert code_init == EXIT_OK
-    assert (tmp_path / ".bridge.json").is_file()
+    assert (tmp_path / ".bridge" / "bridge.json").is_file()
+    assert not (tmp_path / ".bridge.json").exists()
 
     # 4. Whoami & Status
     out_whoami = FakeTTYBuffer(tty=False)

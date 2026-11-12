@@ -14,6 +14,7 @@ from .commands.auth import (
     handle_auth_logout,
     handle_auth_whoami,
     handle_init,
+    handle_projects,
     handle_setup,
     handle_status,
     handle_user,
@@ -160,15 +161,37 @@ def build_parser() -> argparse.ArgumentParser:
         user_p.add_argument("--json", action="store_true", default=False)
 
     for init_cmd in ("init", "connect", "link", "link-project"):
-        init_p = subparsers.add_parser(init_cmd, help="Bind repository or non-Git folder to Bridge by writing .bridge.json.")
+        init_p = subparsers.add_parser(init_cmd, help="Bind repository or non-Git folder to Bridge by writing .bridge/bridge.json.")
         init_p.add_argument("--org", help="Bridge organization ID.")
         init_p.add_argument("--agency-org", dest="agency_org", help=argparse.SUPPRESS)
-        init_p.add_argument("--repo", help="Repository slug (owner/name).")
-        init_p.add_argument("--project", help="Project name (especially for non-Git client folders).")
+        init_p.add_argument("--repo", help="Repository slug (owner/name or repo name).")
+        init_p.add_argument("--project", help="Project name (syncs repo & client onto the Bridge project record when authenticated).")
         init_p.add_argument("--client", help="Client name (for client folders and delivery rollups).")
         init_p.add_argument("--url", help="Bridge API URL.")
         init_p.add_argument("--no-setup", action="store_true", default=False, help="Skip automatic agent skill/MCP setup.")
         init_p.add_argument("--json", action="store_true", default=False)
+
+    for proj_cmd in ("projects", "project"):
+        proj_p = subparsers.add_parser(proj_cmd, help="List or update Bridge project records (/api/v1/projects).")
+        proj_p.add_argument("--search", help="Filter projects by name, slug, or repo.")
+        proj_p.add_argument("--repo", help="Filter projects by repository.")
+        proj_p.add_argument("--json", action="store_true", default=False)
+        proj_sub = proj_p.add_subparsers(dest="projects_action")
+
+        proj_list = proj_sub.add_parser("list", help="List workspace projects.")
+        proj_list.add_argument("--search", help="Filter projects by name, slug, or repo.")
+        proj_list.add_argument("--repo", help="Filter projects by repository.")
+        proj_list.add_argument("--json", action="store_true", default=False)
+
+        for set_cmd in ("set", "upsert", "update", "bind"):
+            proj_set = proj_sub.add_parser(set_cmd, help="Create or update a Bridge project's repository and client metadata.")
+            proj_set.add_argument("name", nargs="?", help="Project name (defaults to .bridge/bridge.json project).")
+            proj_set.add_argument("--id", dest="project_id", help="Optional explicit project ID.")
+            proj_set.add_argument("--slug", help="Optional project slug.")
+            proj_set.add_argument("--repo", help="Repository slug or name (defaults to current repo).")
+            proj_set.add_argument("--client", help="Client name.")
+            proj_set.add_argument("--description", help="Project description.")
+            proj_set.add_argument("--json", action="store_true", default=False)
 
     status_p = subparsers.add_parser("status", help="Show Bridge workspace status, bound task, claims, and spool.")
     status_p.add_argument("--json", action="store_true", default=False)
@@ -276,25 +299,80 @@ def build_parser() -> argparse.ArgumentParser:
         tag_p = seam_sub.add_parser(tag_name, help=f"Log a {tag_name.upper()} seam.")
         tag_p.add_argument("summary", help="Seam summary text (or '-' to read from stdin).")
         tag_p.add_argument("--task", help="Task ID (defaults to current branch binding).")
+        tag_p.add_argument("--project", help="Project name, slug, or ID override (defaults to .bridge/bridge.json project).")
         tag_p.add_argument("--job", help="Agent Job ID.")
         tag_p.add_argument("--branch", help="Git branch override.")
         tag_p.add_argument("--commit", help="Commit SHA override.")
         tag_p.add_argument("--repo", help="Repository slug override.")
         tag_p.add_argument("--agent", help="Agent ID override.")
         tag_p.add_argument("--confidence", type=int, help="Confidence (1-100).")
+        tag_p.add_argument(
+            "--at",
+            "--date",
+            "--created-at",
+            dest="created_at",
+            help="Backlogged timestamp (YYYY-MM-DD or ISO-8601).",
+        )
+        tag_p.add_argument(
+            "--historical",
+            "--backfill",
+            dest="historical",
+            action="store_true",
+            default=False,
+            help="Mark as historical/backlogged (records on dossier & memory without triggering today's brief).",
+        )
         tag_p.add_argument("--json", action="store_true", default=False)
 
     seam_list_p = seam_sub.add_parser("list", help="List recent seams.")
     seam_list_p.add_argument("--tag", help="Filter by tag (WIN, DECISION, FRICTION, HANDOFF).")
     seam_list_p.add_argument("--repo", help="Filter by repository slug.")
+    seam_list_p.add_argument("--project", help="Filter by project ID, slug, or name.")
     seam_list_p.add_argument("--task", help="Filter by task ID.")
+    seam_list_p.add_argument(
+        "--historical",
+        dest="historical_filter",
+        choices=["true", "false"],
+        help="Filter by historical flag (true or false).",
+    )
     seam_list_p.add_argument("--limit", type=int, default=25, help="Max records.")
     seam_list_p.add_argument("--json", action="store_true", default=False)
 
     seam_edit_p = seam_sub.add_parser("edit", help="Edit an existing seam in place.")
     seam_edit_p.add_argument("seam_id", help="Seam ID or 'last'.")
-    seam_edit_p.add_argument("summary", help="Updated summary (or '-' for stdin).")
+    seam_edit_p.add_argument("summary", nargs="?", default=None, help="Updated summary (or '-' for stdin).")
     seam_edit_p.add_argument("--tag", help="Optional updated tag.")
+    seam_edit_p.add_argument("--project", help="Move seam to project (name, slug, or ID; pass '' to unlink).")
+    seam_edit_p.add_argument("--task", help="Link or update task ID (pass '' to unlink).")
+    seam_edit_p.add_argument("--commit", help="Update commit SHA.")
+    seam_edit_p.add_argument(
+        "--bind-repo",
+        dest="bind_repo",
+        action="store_true",
+        default=False,
+        help="Also bind the seam's repository onto the target project record.",
+    )
+    seam_edit_p.add_argument(
+        "--at",
+        "--date",
+        "--created-at",
+        dest="created_at",
+        help="Updated timestamp (YYYY-MM-DD or ISO-8601).",
+    )
+    seam_edit_p.add_argument(
+        "--historical",
+        "--backfill",
+        dest="historical",
+        action="store_true",
+        default=None,
+        help="Mark seam as historical/backlogged.",
+    )
+    seam_edit_p.add_argument(
+        "--live",
+        "--no-historical",
+        dest="historical",
+        action="store_false",
+        help="Clear historical flag on seam.",
+    )
     seam_edit_p.add_argument("--json", action="store_true", default=False)
 
     for retract_cmd in ("retract", "rm", "delete"):
@@ -683,7 +761,18 @@ def run_cli(
         if token == "#" and (
             idx == 0
             or args_list[idx - 1]
-            not in ("--summary", "--title", "--body", "--context", "--reason", "--rationale", "-m")
+            not in (
+                "--summary",
+                "--title",
+                "--body",
+                "--context",
+                "--reason",
+                "--rationale",
+                "-m",
+                "--at",
+                "--date",
+                "--created-at",
+            )
         ):
             # Tolerate unquoted trailing '# comment' tokens pasted into interactive zsh (NO_INTERACTIVE_COMMENTS)
             break
@@ -761,7 +850,10 @@ def run_cli(
         return handle_user(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd in ("init", "connect", "link", "link-project"):
-        return handle_init(args, config, force_json=force_json, stdout_stream=stdout_stream)
+        return handle_init(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+
+    if cmd in ("projects", "project"):
+        return handle_projects(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
 
     if cmd == "status":
         return handle_status(args, config, client, force_json=force_json, stdout_stream=stdout_stream)

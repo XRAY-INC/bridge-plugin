@@ -167,7 +167,10 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "summary": {"type": "string"},
                 "seam_id": {"type": "string"},
                 "task_id": {"type": "string"},
+                "project": {"type": "string"},
                 "user": {"type": "string"},
+                "created_at": {"type": "string"},
+                "historical": {"type": "boolean"},
             },
         },
     },
@@ -548,34 +551,59 @@ def call_mcp_tool_handler(
             )
         action = str(args_dict.get("action") or "log").lower()
         if action == "list":
+            raw_hist = args_dict.get("historical")
+            hist_filter = "true" if raw_hist is True else "false" if raw_hist is False else None
             ns = argparse.Namespace(
                 repo=args_dict.get("repo"),
                 tag=args_dict.get("tag"),
                 task=args_dict.get("task_id"),
+                project=args_dict.get("project"),
+                historical_filter=hist_filter,
                 limit=args_dict.get("limit", 20),
             )
             code = handle_seam_list(ns, config, client, force_json=True, stdout_stream=buf)
         elif action == "edit":
+            raw_edit_ts = (
+                args_dict.get("created_at")
+                or args_dict.get("at")
+                or args_dict.get("createdAt")
+                or args_dict.get("occurred_at")
+            )
             ns = argparse.Namespace(
                 seam_id=args_dict.get("seam_id") or "last",
-                summary=args_dict.get("summary") or "",
+                summary=args_dict.get("summary"),
                 tag=args_dict.get("tag"),
+                project=args_dict.get("project"),
+                task=args_dict.get("task_id"),
+                commit=args_dict.get("commit_sha"),
+                bind_repo=bool(args_dict.get("bind_repo", False)),
+                created_at=raw_edit_ts,
+                historical=args_dict.get("historical") if "historical" in args_dict else None,
             )
             code = handle_seam_edit(ns, config, client, force_json=True, stdout_stream=buf)
         elif action == "retract":
             ns = argparse.Namespace(seam_id=args_dict.get("seam_id") or "last")
             code = handle_seam_retract(ns, config, client, force_json=True, stdout_stream=buf)
         else:
+            raw_log_ts = (
+                args_dict.get("created_at")
+                or args_dict.get("at")
+                or args_dict.get("createdAt")
+                or args_dict.get("occurred_at")
+            )
             ns = argparse.Namespace(
                 tag=args_dict.get("tag") or "win",
                 summary=args_dict.get("summary") or "",
                 task=args_dict.get("task_id"),
+                project=args_dict.get("project"),
                 job=args_dict.get("job_id"),
                 branch=args_dict.get("branch"),
                 commit=args_dict.get("commit_sha"),
                 repo=args_dict.get("repo"),
                 agent=args_dict.get("agent"),
                 confidence=args_dict.get("confidence"),
+                created_at=raw_log_ts,
+                historical=bool(args_dict.get("historical", False)),
             )
             code = handle_seam_log(ns, config, client, force_json=True, stdout_stream=buf)
         result_data = buf.get_json()

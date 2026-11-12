@@ -108,7 +108,7 @@ class BridgeClient:
                     "repository": repo_label,
                     "error": "LOCAL_WORKSPACE_UNBOUND",
                     "message": (
-                        f"Current directory '{repo_label}' is LOCAL (not bound to Bridge via .bridge.json). "
+                        f"Current directory '{repo_label}' is LOCAL (not bound to Bridge via .bridge/bridge.json). "
                         "Refusing to transmit local session data to Bridge. "
                         "Run 'brg init' only if this repository belongs to a Bridge workspace."
                     ),
@@ -124,7 +124,7 @@ class BridgeClient:
                 data={
                     "ok": False,
                     "error": "AUTH_OR_CONFIG_MISSING",
-                    "message": "Missing BRIDGE_API_KEY and .bridge.json. Run 'bridge auth login' or 'bridge init'.",
+                    "message": "Missing BRIDGE_API_KEY and .bridge/bridge.json. Run 'bridge auth login' or 'bridge init'.",
                 },
                 error="AUTH_OR_CONFIG_MISSING",
             )

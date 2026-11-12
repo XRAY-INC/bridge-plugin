@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 
 from ..client import BridgeClient
@@ -24,6 +26,79 @@ from ..runtime import (
 )
 
 VALID_SEAM_TAGS = ("WIN", "DECISION", "FRICTION", "HANDOFF")
+_DATE_ONLY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_MAX_FUTURE_SKEW = timedelta(minutes=5)
+
+
+def normalize_seam_timestamp(
+    raw: Any,
+    *,
+    now: datetime | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Validate and normalize a YYYY-MM-DD or ISO-8601 timestamp string.
+
+    Returns ``(normalized_iso, error_code, error_message)``.
+    Bare ``YYYY-MM-DD`` dates normalize to ``YYYY-MM-DDT12:00:00Z`` (noon UTC)
+    so calendar day rendering stays consistent across timezones.
+    """
+    if raw is None:
+        return None, None, None
+    text = str(raw).strip()
+    if not text:
+        return None, "INVALID_SEAM_TIMESTAMP", "Seam timestamp cannot be empty."
+
+    ref_now = now or datetime.now(timezone.utc)
+    m = _DATE_ONLY_RE.match(text)
+    if m:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            return (
+                None,
+                "INVALID_SEAM_TIMESTAMP",
+                f"Invalid calendar date '{text}'. Expected YYYY-MM-DD.",
+            )
+        parsed = datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=timezone.utc)
+        # For bare YYYY-MM-DD, allow today's date in any timezone up to UTC+14
+        if d > (ref_now + timedelta(hours=14)).date():
+            return (
+                None,
+                "FUTURE_SEAM_TIMESTAMP",
+                f"Timestamp '{text}' is in the future; backlogged seams must occur on or before today.",
+            )
+        if parsed > ref_now:
+            parsed = ref_now.astimezone(timezone.utc)
+    else:
+        iso_candidate = f"{text[:-1]}+00:00" if text.endswith(("Z", "z")) else text
+        try:
+            parsed = datetime.fromisoformat(iso_candidate)
+        except ValueError:
+            return (
+                None,
+                "INVALID_SEAM_TIMESTAMP",
+                f"Invalid timestamp '{text}'. Expected YYYY-MM-DD or ISO-8601.",
+            )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        if parsed > ref_now + _MAX_FUTURE_SKEW:
+            return (
+                None,
+                "FUTURE_SEAM_TIMESTAMP",
+                f"Timestamp '{text}' is in the future; backlogged seams must occur at or before now.",
+            )
+
+    if parsed.year < 2000:
+        return (
+            None,
+            "INVALID_SEAM_TIMESTAMP",
+            f"Timestamp '{text}' predates year 2000.",
+        )
+
+    normalized = parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return normalized, None, None
 
 
 def handle_seam_log(
@@ -64,6 +139,18 @@ def handle_seam_log(
         )
         return EXIT_ERROR
 
+    raw_created_at = getattr(args, "created_at", None)
+    normalized_created_at, ts_err, ts_msg = normalize_seam_timestamp(raw_created_at)
+    if ts_err:
+        emit_output(
+            {"ok": False, "error": ts_err, "message": ts_msg or "Invalid timestamp."},
+            f"Error: {ts_msg or ts_err}",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+    historical = bool(getattr(args, "historical", False))
+
     runtime = detect_runtime_context(
         cwd=config.workspace_root,
         env=config.env,
@@ -83,13 +170,14 @@ def handle_seam_log(
     repo = getattr(args, "repo", None) or config.repository or runtime["repository"]
     org_id = config.organization_id or ""
 
+    idem_summary = f"{summary}|at:{normalized_created_at}" if normalized_created_at else summary
     idempotency_key = compute_idempotency_key(
         org_id=org_id,
         repo=repo,
         branch=branch,
         commit_sha=commit_sha,
         tag=tag,
-        summary=summary,
+        summary=idem_summary,
     )
 
     body: dict[str, Any] = {
@@ -109,6 +197,13 @@ def handle_seam_log(
             "ci": runtime["ci"],
         },
     }
+    if normalized_created_at:
+        body["createdAt"] = normalized_created_at
+        body["loggedAt"] = normalized_created_at
+        body["metadata"]["createdAt"] = normalized_created_at
+    if historical:
+        body["historical"] = True
+        body["metadata"]["historical"] = True
     if config.organization_id:
         body["organizationId"] = config.organization_id
     if config.user_email:
@@ -118,9 +213,10 @@ def handle_seam_log(
         body["metadata"]["userName"] = config.user_name
     if config.user_alias:
         body["metadata"]["userAlias"] = config.user_alias
-    if config.project_name:
-        body["project"] = config.project_name
-        body["projectName"] = config.project_name
+    effective_project = getattr(args, "project", None) or config.project_name
+    if effective_project:
+        body["project"] = effective_project
+        body["projectName"] = effective_project
     if config.client_name:
         body["metadata"]["clientName"] = config.client_name
     if getattr(args, "confidence", None) is not None:
@@ -193,15 +289,27 @@ def handle_seam_log(
         "taskId": task_id,
         "jobId": job_id,
         "idempotencyKey": idempotency_key,
+        "historical": historical,
+        **({"createdAt": normalized_created_at} if normalized_created_at else {}),
         "statusBar": sb_line,
     }
     if mirrored_to_agency and config.agency_organization_id:
         out_payload["mirroredToAgencyOrg"] = config.agency_organization_id
+    badge_parts = [tag]
+    if historical:
+        badge_parts.append("historical")
+    if normalized_created_at:
+        badge_parts.append(normalized_created_at[:10])
+    badge_label = " · ".join(badge_parts)
     if resp.spooled:
-        human = f"[SPOOLED] {tag} ({repo}:{branch}): {summary}"
+        human = f"[SPOOLED] {badge_label} ({repo}:{branch}): {summary}"
     elif resp.ok:
         seam_id = seam_obj.get("id", "ok") if seam_obj else "ok"
-        human = f"[{tag}] ({seam_id}) {repo}:{branch}" + (f" [task:{task_id}]" if task_id else "") + f" — {summary}"
+        human = (
+            f"[{badge_label}] ({seam_id}) {repo}:{branch}"
+            + (f" [task:{task_id}]" if task_id else "")
+            + f" — {summary}"
+        )
     elif resp.error == "LOCAL_WORKSPACE_UNBOUND":
         human = (
             f"[LOCAL — NOT SENT TO BRIDGE] '{repo}' is in LOCAL mode (no .bridge.json). "
@@ -233,6 +341,10 @@ def handle_seam_list(
         params["tag"] = str(args.tag).upper()
     if getattr(args, "task", None):
         params["taskId"] = args.task
+    if getattr(args, "project", None):
+        params["project"] = args.project
+    if getattr(args, "historical_filter", None) in ("true", "false"):
+        params["historical"] = args.historical_filter
     if getattr(args, "limit", None):
         params["limit"] = int(args.limit)
 
@@ -241,7 +353,7 @@ def handle_seam_list(
     rows = [
         [
             s.get("id", ""),
-            s.get("tag", ""),
+            f"{s.get('tag', '')}{' (hist)' if s.get('historical') else ''}",
             s.get("repository", ""),
             s.get("gitBranch", ""),
             s.get("taskId") or "-",
@@ -280,11 +392,49 @@ def handle_seam_edit(
         )
         return EXIT_ERROR
 
-    new_summary = resolve_stdin_or_arg(getattr(args, "summary", None), stdin_stream=stdin_stream)
-    if not new_summary:
+    raw_summary = getattr(args, "summary", None)
+    new_summary = (
+        resolve_stdin_or_arg(raw_summary, stdin_stream=stdin_stream)
+        if raw_summary is not None
+        else ""
+    )
+    raw_created_at = getattr(args, "created_at", None)
+    normalized_created_at, ts_err, ts_msg = normalize_seam_timestamp(raw_created_at)
+    if ts_err:
         emit_output(
-            {"ok": False, "error": "SUMMARY_REQUIRED", "message": "New summary is required."},
-            "Error: New summary is required.",
+            {"ok": False, "error": ts_err, "message": ts_msg or "Invalid timestamp."},
+            f"Error: {ts_msg or ts_err}",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    historical_flag = getattr(args, "historical", None)
+    has_tag_update = bool(getattr(args, "tag", None))
+    raw_project = getattr(args, "project", None)
+    has_project_update = raw_project is not None
+    raw_task = getattr(args, "task", None)
+    has_task_update = raw_task is not None
+    raw_commit = getattr(args, "commit", None)
+    has_commit_update = raw_commit is not None
+    bind_repo = bool(getattr(args, "bind_repo", False))
+
+    if (
+        not new_summary
+        and not normalized_created_at
+        and historical_flag is None
+        and not has_tag_update
+        and not has_project_update
+        and not has_task_update
+        and not has_commit_update
+    ):
+        emit_output(
+            {
+                "ok": False,
+                "error": "SUMMARY_REQUIRED",
+                "message": "Provide an updated summary, --project, --task, --commit, --tag, --at, or --historical/--live.",
+            },
+            "Error: Provide an updated summary, --project, --task, --commit, --tag, --at, or --historical/--live.",
             force_json=force_json,
             stdout_stream=stdout_stream,
         )
@@ -293,16 +443,33 @@ def handle_seam_edit(
     body: dict[str, Any] = {
         "id": seam_id,
         "seamId": seam_id,
-        "summary": new_summary,
     }
-    if getattr(args, "tag", None):
+    if new_summary:
+        body["summary"] = new_summary
+    if has_tag_update:
         body["tag"] = str(args.tag).strip().upper()
+    if has_project_update:
+        clean_proj = str(raw_project).strip()
+        body["project"] = clean_proj if clean_proj else None
+        body["projectName"] = clean_proj if clean_proj else None
+    if bind_repo:
+        body["bindRepositoryToProject"] = True
+    if has_task_update:
+        clean_task = str(raw_task).strip()
+        body["taskId"] = clean_task if clean_task else None
+    if has_commit_update:
+        clean_commit = str(raw_commit).strip()
+        body["commitSha"] = clean_commit if clean_commit else None
+    if normalized_created_at:
+        body["createdAt"] = normalized_created_at
+    if isinstance(historical_flag, bool):
+        body["historical"] = historical_flag
     if config.organization_id:
         body["organizationId"] = config.organization_id
 
     resp = client.request("PATCH", "/api/v1/fleet/seam", json_body=body)
     human = (
-        f"Updated seam {seam_id}: {new_summary}"
+        f"Updated seam {seam_id}" + (f": {new_summary}" if new_summary else ".")
         if resp.ok
         else f"Error updating seam {seam_id}: {resp.error}"
     )

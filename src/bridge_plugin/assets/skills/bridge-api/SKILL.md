@@ -101,9 +101,13 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
 - **`POST /api/v1/decide/guest-vote`** — Zero-login 1-Click Magic Link vote endpoint (`token`, `optionId` or `customOption: { label, summary }`, `score`, `rationale`). Auto-resolves the Decision (`status: "DECIDED"`) and unblocks waiting tasks when an `APPROVER` stakeholder votes.
 - **`POST /api/v1/decide/<id>/score`** — Score an option (`optionId`, `criterionId`, `score` 1-10) or resolve (`action: "resolve"`, `chosenOptionId`, `rationale`).
 
-### 2.5 Interstitial Seams, Scope Leases & Scratchpad
+### 2.5 Interstitial Seams, Projects, Scope Leases & Scratchpad
 - **`GET | POST | PATCH | DELETE /api/v1/fleet/seam`**
-  - `POST`: `{ "tag": "WIN" | "DECISION" | "FRICTION" | "HANDOFF", "summary": "...", "repository": "owner/name", "gitBranch": "main", "commitSha": "...", "taskId": "..." }` (15-minute sliding deduplication window).
+  - `POST`: `{ "tag": "WIN" | "DECISION" | "FRICTION" | "HANDOFF", "summary": "...", "repository": "owner/name", "project": "Optional Project", "createdAt": "2026-10-15", "historical": true, "gitBranch": "main", "commitSha": "...", "taskId": "..." }` (15-minute sliding deduplication window for live seams).
+  - `PATCH`: `{ "id": "<seamId>", "summary": "<optional>", "project": "<projectNameOrSlug>", "bindRepositoryToProject": true, "createdAt": "2026-10-15", "historical": true }`.
+- **`GET | POST | PATCH /api/v1/projects`**
+  - `GET`: List workspace projects with `repositoryFullName`, `clientName`, `description`, `seamCount`, and `taskCount`.
+  - `POST` (upsert) / `PATCH`: `{ "name": "Project Name", "repositoryFullName": "owner/repo-or-slug", "clientName": "Acme Corp", "description": "..." }`.
 - **`GET | POST | DELETE /api/v1/fleet/leases`**
   - `POST` (`action: "claim"`): `{ "repository": "owner/name", "worktreeBranch": "feat/x", "claimedGlobs": ["src/auth/*"], "agentId": "claude-code", "ttlMinutes": 30 }`. Returns `409 LEASE_CONFLICT` if another agent holds an overlapping glob.
   - `POST` (`action: "release"`) or `DELETE`: `{ "repository": "owner/name", "agentId": "claude-code", "all": true }`.

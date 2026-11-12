@@ -143,7 +143,7 @@ def test_guard_savepoint_io_failure_fails_open_while_policy_violations_fail_clos
     )
     out_edit = NonTTYBuffer()
     assert run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=edit_stdin, stdout_stream=out_edit) == EXIT_OK
-    assert json.loads(out_edit.getvalue()) == {"decision": "allow"}
+    assert json.loads(out_edit.getvalue()) == {}
 
     # 2. Safe mutating bash command also returns allow (exit 0)
     bash_stdin = io.StringIO(
@@ -151,7 +151,7 @@ def test_guard_savepoint_io_failure_fails_open_while_policy_violations_fail_clos
     )
     out_bash = NonTTYBuffer()
     assert run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=bash_stdin, stdout_stream=out_bash) == EXIT_OK
-    assert json.loads(out_bash.getvalue()) == {"decision": "allow"}
+    assert json.loads(out_bash.getvalue()) == {}
 
     # 3. Frozen file edit still fails closed (exit 2)
     frozen_stdin = io.StringIO(
@@ -162,7 +162,9 @@ def test_guard_savepoint_io_failure_fails_open_while_policy_violations_fail_clos
         run_cli(["guard"], cwd=tmp_path, env=env, stdin_stream=frozen_stdin, stdout_stream=out_denied)
         == EXIT_CONCURRENCY_BLOCK
     )
-    assert json.loads(out_denied.getvalue())["decision"] == "deny"
+    denied_payload = json.loads(out_denied.getvalue())
+    assert denied_payload["decision"] == "block"
+    assert denied_payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_guard_multi_root_workspace_paths_resolves_containing_repo(tmp_path: Path) -> None:

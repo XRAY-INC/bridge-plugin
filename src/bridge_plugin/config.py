@@ -13,12 +13,17 @@ from typing import Any, Mapping
 
 from .runtime import (
     DEFAULT_API_URL,
+    _run_git,
     detect_git_branch,
     detect_git_repo_slug,
     detect_git_root,
 )
 
+CANONICAL_PROJECT_CONFIG_RELPATH = ".bridge/bridge.json"
+
 PROJECT_CONFIG_FILENAMES = (
+    ".bridge/bridge.json",
+    ".bridge/config.json",
     ".bridge.json",
     ".workspace-project.json",
 )
@@ -504,7 +509,7 @@ def resolve_config(
     cfg_file = find_project_config_file(start_dir=work_dir)
     file_data: dict[str, Any] = {}
     if cfg_file and cfg_file.is_file():
-        workspace_root = cfg_file.parent
+        workspace_root = cfg_file.parent.parent if cfg_file.parent.name == ".bridge" else cfg_file.parent
         try:
             file_data = json.loads(cfg_file.read_text(encoding="utf-8"))
         except Exception:
@@ -568,7 +573,12 @@ def resolve_config(
                 break
         if not api_key and isinstance(file_data.get("apiKey"), str) and file_data["apiKey"].strip():
             api_key = file_data["apiKey"].strip()
-            auth_source = f"file:{cfg_file.name if cfg_file else '.bridge.json'}"
+            cfg_label = (
+                f".bridge/{cfg_file.name}"
+                if cfg_file and cfg_file.parent.name == ".bridge"
+                else (cfg_file.name if cfg_file else CANONICAL_PROJECT_CONFIG_RELPATH)
+            )
+            auth_source = f"file:{cfg_label}"
         if (
             not api_key
             and org_id
@@ -732,12 +742,26 @@ def write_project_config(
     agency_organization_id: str | None = None,
     project_name: str | None = None,
     client_name: str | None = None,
-    filename: str = ".bridge.json",
+    filename: str = CANONICAL_PROJECT_CONFIG_RELPATH,
 ) -> Path:
-    """Write .bridge.json in the workspace root."""
+    """Write .bridge/bridge.json in the workspace (preserving custom fields and migrating untracked root .bridge.json)."""
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_data: dict[str, Any] = {}
+    legacy_root_cfg = target_dir / ".bridge.json"
+    for candidate in (legacy_root_cfg, path):
+        if candidate.is_file():
+            try:
+                loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing_data.update(loaded)
+            except Exception:
+                pass
+
     payload: dict[str, Any] = {
+        **existing_data,
         "plugin": "bridge",
         "organizationId": organization_id.strip(),
         "apiUrl": api_url.strip().rstrip("/"),
@@ -755,6 +779,16 @@ def write_project_config(
         payload["clientName"] = client_name.strip()
         payload["client"] = client_name.strip()
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    # If migrating to .bridge/bridge.json and an untracked legacy root .bridge.json exists, clean it up automatically
+    if path != legacy_root_cfg and legacy_root_cfg.is_file():
+        tracked = _run_git(["ls-files", "--error-unmatch", ".bridge.json"], cwd=target_dir)
+        if not tracked:
+            try:
+                legacy_root_cfg.unlink()
+            except Exception:
+                pass
+
     return path
 
 

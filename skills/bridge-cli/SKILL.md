@@ -19,7 +19,7 @@ Use this skill when driving **Bridge (`https://bridge.xray.tech`)** from a termi
    - `BRIDGE_URL` (defaults to `https://bridge.xray.tech`)
    - `BRIDGE_ORG_ID`
    - `BRIDGE_REPO` (`owner/name`)
-3. **Repository Binding (`.bridge.json`):** Created via `brg init`.
+3. **Repository Binding (`.bridge/bridge.json`, with legacy `.bridge.json` fallback):** Created via `brg init` or `brg link`.
 4. **User Credentials (`~/.config/bridge/credentials.json`):** Saved via `brg auth login` (`0600` permissions).
 
 ```bash
@@ -28,11 +28,13 @@ export BRIDGE_API_KEY="xrkey_v1..."
 brg auth login --api-key "$BRIDGE_API_KEY"
 brg auth whoami --verify
 
-# Bind current repository (.bridge.json) and add .bridge/ to .gitignore
+# Bind current repository (.bridge/bridge.json) and keep local state in .bridge/* gitignored
 brg init
 
-# Or bind a non-Git project folder
-brg init --org <orgId> --project "Q4 Revenue Enablement" --client "Acme Corp"
+# Bind or update repo -> project & client (also syncs repositoryFullName & clientName to /api/v1/projects)
+brg link --repo acme-sync --project "Q4 Revenue Enablement" --client "Acme Corp"
+brg projects list --json
+brg projects set "Q4 Revenue Enablement" --repo acme-sync --client "Acme Corp"
 
 # Set active teammate identity (for shared logins or pair sessions)
 brg user alice@acme.com --name "Alice Chen"  # Set machine-level default
@@ -161,10 +163,16 @@ brg seam win "Shipped SAML 2.0 metadata parser with 12 unit tests"
 brg seam decision "Adopted HKDF-SHA256 per-tenant key derivation"
 brg seam friction "Third-party sandbox rate-limits OAuth token endpoint to 10 req/min"
 
-# Edit, retract, list, or flush offline spooled seams
+# Log backlogged / historical wins (--at sets createdAt & FactSource.sourceAt; --historical suppresses today's Morning Brief)
+brg seam win "Shipped v1 Stripe webhook retry queue" --at 2026-10-15 --historical
+
+# Edit, move to a project, retract, list, or flush offline spooled seams
 brg seam edit last "Updated summary with PR #418 benchmark numbers"
+brg seam edit <seamId> --project "Q4 Revenue Enablement" --bind-repo
+brg seam edit last --at 2026-10-15 --historical
 brg seam retract last
 brg seam list --limit 20 --json
+brg seam list --historical true --json
 brg seam flush --json
 
 # Read/write shared working-memory scratchpad notes and close turn with a handoff
