@@ -44,6 +44,8 @@ Works across **Claude Code**, **Claude Desktop**, **OpenAI Codex**, **Cursor**, 
 ### 0. One-Command Machine Setup
 
 ```bash
+export PATH="$HOME/.local/bin:$PATH"
+export BRIDGE_API_KEY="xrkey_v1..."
 curl -fsSL https://bridge.xray.tech/install.sh | sh
 ```
 
@@ -71,12 +73,12 @@ pipx install --force git+https://github.com/XRAY-INC/bridge-plugin.git
 ### 4. One-Command Agent & Git Hook Setup
 
 ```bash
-bridge setup              # Configures all global harnesses (Claude, Antigravity, Cursor, Codex)
-bridge setup claude       # Configures .mcp.json & .claude/skills/bridge-*/SKILL.md
-bridge setup cursor       # Configures .cursor/mcp.json & .cursor/skills/bridge-*/SKILL.md
-bridge setup antigravity  # Configures .gemini/settings.json & .agent/skills/bridge-*/SKILL.md
-bridge setup codex        # Configures .agents/skills/bridge-*/SKILL.md
-bridge setup git-hooks    # Installs prepare-commit-msg & post-commit hooks
+bridge setup
+bridge setup claude
+bridge setup cursor
+bridge setup antigravity
+bridge setup codex
+bridge setup git-hooks
 ```
 
 ---

@@ -159,3 +159,75 @@ def test_release_reports_a_server_failure(tmp_path: Path) -> None:
     data = json.loads(out.getvalue())
     assert data["ok"] is False
     assert data["released"] is False
+
+
+def test_cli_tolerates_unquoted_zsh_inline_comments(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    env = {"BRIDGE_API_KEY": make_key("org_zsh"), "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"), "HOME": str(tmp_path)}
+
+    setup_out = NonTTYBuffer()
+    assert (
+        run_cli(
+            ["setup", "#", "Configures", "global", "skills,", "MCP", "server"],
+            cwd=tmp_path,
+            env=env,
+            stdout_stream=setup_out,
+        )
+        == EXIT_OK
+    )
+
+    init_out = NonTTYBuffer()
+    assert (
+        run_cli(
+            ["init", "--repo", "acme/zsh", "#", "Writes", ".bridge.json", "in", "the", "current", "repository"],
+            cwd=tmp_path,
+            env=env,
+            stdout_stream=init_out,
+        )
+        == EXIT_OK
+    )
+    assert json.loads(init_out.getvalue())["organizationId"] == "org_zsh"
+
+
+def test_install_sh_executes_cleanly_under_posix_sh(tmp_path: Path) -> None:
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    install_script = (repo_root / "install.sh").read_bytes()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    git_repo = tmp_path / "repo"
+    (git_repo / ".git").mkdir(parents=True)
+    log_file = tmp_path / "invocations.log"
+
+    uv_stub = bin_dir / "uv"
+    uv_stub.write_text(
+        f'#!/bin/sh\nprintf "uv %s\\n" "$*" >> "{log_file}"\n'
+        f'if [ "$1" = "tool" ] && [ "$2" = "dir" ]; then printf "%s\\n" "{bin_dir}"; fi\n',
+        encoding="utf-8",
+    )
+    uv_stub.chmod(0o755)
+
+    brg_stub = bin_dir / "brg"
+    brg_stub.write_text(f'#!/bin/sh\nprintf "brg %s\\n" "$*" >> "{log_file}"\n', encoding="utf-8")
+    brg_stub.chmod(0o755)
+
+    res = subprocess.run(
+        ["/bin/sh"],
+        input=install_script,
+        cwd=str(git_repo),
+        env={
+            "HOME": str(tmp_path),
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "BRIDGE_API_KEY": "xrkey_v1.testpayload.testsig",
+        },
+        capture_output=True,
+    )
+    assert res.returncode == 0, res.stderr.decode("utf-8", "replace")
+    assert "=== Bridge Machine Setup Complete ===" in res.stdout.decode("utf-8", "replace")
+    logged = log_file.read_text(encoding="utf-8")
+    assert "brg auth login --api-key xrkey_v1.testpayload.testsig" in logged
+    assert "brg setup all --global" in logged
+    assert "brg init" in logged
+

@@ -680,6 +680,13 @@ def run_cli(
             explicit_cwd = token.split("=", 1)[1]
             idx += 1
             continue
+        if token == "#" and (
+            idx == 0
+            or args_list[idx - 1]
+            not in ("--summary", "--title", "--body", "--context", "--reason", "--rationale", "-m")
+        ):
+            # Tolerate unquoted trailing '# comment' tokens pasted into interactive zsh (NO_INTERACTIVE_COMMENTS)
+            break
         cleaned_args.append(token)
         idx += 1
 
