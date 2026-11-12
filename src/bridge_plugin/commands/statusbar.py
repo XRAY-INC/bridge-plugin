@@ -26,7 +26,6 @@ from ..runtime import (
     detect_runtime_context,
     emit_output,
 )
-from .safety import load_frozen_globs, load_snapshots
 
 ALL_STATUS_SEGMENTS: tuple[str, ...] = (
     "scope",
@@ -53,6 +52,7 @@ def _detect_git_dirty(cwd: Path) -> bool:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=1.5,
             check=False,
         )
@@ -73,6 +73,7 @@ def _detect_git_user_identity(cwd: Path) -> tuple[str | None, str | None]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=1.5,
             check=False,
         )
@@ -83,6 +84,7 @@ def _detect_git_user_identity(cwd: Path) -> tuple[str | None, str | None]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=1.5,
             check=False,
         )
@@ -110,6 +112,7 @@ def _detect_harness_from_process_tree(
                 ["ps", "-o", "ppid=,comm=,args=", "-p", str(pid)],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=0.3,
                 check=False,
             )
@@ -434,9 +437,15 @@ def render_status_bar(
     branch_state = get_branch_state(config, branch=git_branch or "main")
     bound_task_id = branch_state.get("taskId")
     active_claims = load_local_claims(config)
-    snapshots = load_snapshots(config)
+    try:
+        from .safety import load_frozen_globs, load_snapshots
+
+        snapshots = load_snapshots(config)
+        frozen_globs = load_frozen_globs(config)
+    except Exception:
+        snapshots = []
+        frozen_globs = []
     latest_savepoint = str(snapshots[0].get("id"))[:12] if snapshots else None
-    frozen_globs = load_frozen_globs(config)
 
     spool_count = 0
     if config.spool_path.is_file():

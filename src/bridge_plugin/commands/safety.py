@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,10 +23,12 @@ from ..runtime import (
     EXIT_CONFIG_MISSING,
     EXIT_ERROR,
     EXIT_OK,
+    copy_file_safe,
     detect_git_branch,
     detect_git_commit_sha,
     detect_runtime_context,
     emit_output,
+    emit_stderr,
     format_table,
     globs_overlap,
 )
@@ -45,6 +48,10 @@ EXCLUDED_BACKUP_DIRS = {
 }
 
 MAX_BACKUP_FILE_BYTES = 5 * 1024 * 1024  # 5 MB per file in non-Git / untracked snapshots
+GUARD_SAVEPOINT_BUDGET_SECONDS = 4.0  # Stay safely below 10s PreToolUse hook timeout on slow/SMB mounts
+GUARD_FAST_UNTRACKED_THRESHOLD = 25  # Use stat-based digest for auto-guard when untracked count is high
+
+_copy_file_safe = copy_file_safe
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +245,7 @@ def _is_git_repo(root: Path) -> bool:
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=3,
             check=False,
         )
@@ -277,6 +285,7 @@ def _list_untracked_files(root: Path) -> list[str]:
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -314,19 +323,32 @@ def _iter_non_git_workspace_files(root: Path) -> list[str]:
     return sorted(results)
 
 
-def _compute_files_digest(root: Path, rel_paths: Sequence[str]) -> str:
-    """Compute a deterministic SHA-256 digest over a list of relative file paths and their contents."""
+def _compute_files_digest(
+    root: Path,
+    rel_paths: Sequence[str],
+    *,
+    stat_only: bool = False,
+    deadline: float | None = None,
+) -> str:
+    """Compute a deterministic SHA-256 digest over relative file paths and contents (or stat metadata when bounded)."""
     h = hashlib.sha256()
+    used_stat_mode = stat_only
     for rel in sorted(rel_paths):
         h.update(rel.encode("utf-8") + b"\0")
         fp = root / rel
         try:
-            if fp.is_file() and fp.stat().st_size <= MAX_BACKUP_FILE_BYTES:
-                h.update(fp.read_bytes())
+            st = fp.stat()
+            if fp.is_file() and st.st_size <= MAX_BACKUP_FILE_BYTES:
+                if stat_only or (deadline is not None and time.monotonic() >= deadline):
+                    used_stat_mode = True
+                    h.update(f"stat:{st.st_size}:{st.st_mtime_ns}".encode("ascii"))
+                else:
+                    h.update(fp.read_bytes())
         except Exception:
             pass
         h.update(b"\0")
-    return h.hexdigest()
+    prefix = "stat:" if used_stat_mode else ""
+    return f"{prefix}{h.hexdigest()}"
 
 
 def create_savepoint_record(
@@ -334,12 +356,15 @@ def create_savepoint_record(
     *,
     label: str = "manual",
     allow_dedup: bool = True,
+    auto_guard: bool = False,
 ) -> dict[str, Any]:
     """Create an off-branch Git savepoint (or directory backup in non-Git folders) and return its metadata."""
     root = config.workspace_root
     now = datetime.now(timezone.utc)
     snap_id = f"snap_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     existing = load_snapshots(config)
+    git_timeout = 4 if auto_guard else 15
+    deadline = (time.monotonic() + GUARD_SAVEPOINT_BUDGET_SECONDS) if auto_guard else None
 
     if _is_git_repo(root):
         branch = detect_git_branch(cwd=root, env=config.env)
@@ -351,6 +376,8 @@ def create_savepoint_record(
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
+            timeout=git_timeout,
             check=False,
         )
         index_tree_sha = real_tree_proc.stdout.strip() if real_tree_proc.returncode == 0 else None
@@ -364,6 +391,8 @@ def create_savepoint_record(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=git_timeout,
                 check=False,
             )
             git_index_orig = (
@@ -372,7 +401,8 @@ def create_savepoint_record(
                 else (root / ".git" / "index")
             )
             if git_index_orig.is_file():
-                shutil.copy2(git_index_orig, tmp_index_path)
+                # Ephemeral temp index only needs raw bytes; avoid shutil.copy2 chflags EPERM on macOS SMB mounts.
+                shutil.copyfile(git_index_orig, tmp_index_path)
             else:
                 tmp_index_path.unlink(missing_ok=True)
 
@@ -383,6 +413,8 @@ def create_savepoint_record(
                 env=git_env,
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=git_timeout,
                 check=False,
             )
             wt_tree_proc = subprocess.run(
@@ -391,6 +423,8 @@ def create_savepoint_record(
                 env=git_env,
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=git_timeout,
                 check=False,
             )
             worktree_tree_sha = wt_tree_proc.stdout.strip() if wt_tree_proc.returncode == 0 else ""
@@ -398,7 +432,13 @@ def create_savepoint_record(
             tmp_index_path.unlink(missing_ok=True)
 
         untracked_files = _list_untracked_files(root)
-        untracked_digest = _compute_files_digest(root, untracked_files)
+        stat_only_untracked = auto_guard and len(untracked_files) > GUARD_FAST_UNTRACKED_THRESHOLD
+        untracked_digest = _compute_files_digest(
+            root,
+            untracked_files,
+            stat_only=stat_only_untracked,
+            deadline=deadline,
+        )
         fingerprint = f"git:{head_sha or 'none'}:{index_tree_sha or 'none'}:{worktree_tree_sha}:{untracked_digest}"
 
         if allow_dedup and existing and existing[0].get("fingerprint") == fingerprint:
@@ -412,6 +452,8 @@ def create_savepoint_record(
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
+            timeout=git_timeout,
             check=False,
         )
         snapshot_commit_sha = commit_proc.stdout.strip() if commit_proc.returncode == 0 else worktree_tree_sha
@@ -421,6 +463,8 @@ def create_savepoint_record(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=git_timeout,
                 check=False,
             )
 
@@ -428,12 +472,14 @@ def create_savepoint_record(
         untracked_backup_dir = config.bridge_dir / "snapshots" / snap_id / "untracked"
         saved_untracked: list[str] = []
         for rel in untracked_files:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             src = root / rel
             try:
                 if src.is_file() and src.stat().st_size <= MAX_BACKUP_FILE_BYTES:
                     dest = untracked_backup_dir / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dest)
+                    _copy_file_safe(src, dest)
                     saved_untracked.append(rel)
             except Exception:
                 continue
@@ -455,7 +501,13 @@ def create_savepoint_record(
         }
     else:
         rel_files = _iter_non_git_workspace_files(root)
-        digest = _compute_files_digest(root, rel_files)
+        stat_only_dir = auto_guard and len(rel_files) > GUARD_FAST_UNTRACKED_THRESHOLD
+        digest = _compute_files_digest(
+            root,
+            rel_files,
+            stat_only=stat_only_dir,
+            deadline=deadline,
+        )
         fingerprint = f"dir:{digest}"
         if allow_dedup and existing and existing[0].get("fingerprint") == fingerprint:
             return {**existing[0], "deduplicated": True}
@@ -463,11 +515,13 @@ def create_savepoint_record(
         files_backup_dir = config.bridge_dir / "snapshots" / snap_id / "files"
         saved_files: list[str] = []
         for rel in rel_files:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             src = root / rel
             try:
                 dest = files_backup_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dest)
+                _copy_file_safe(src, dest)
                 saved_files.append(rel)
             except Exception:
                 continue
@@ -576,6 +630,8 @@ def _restore_snapshot_record(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=15,
                 check=False,
             )
         index_tree = snap.get("indexTreeSha")
@@ -585,6 +641,8 @@ def _restore_snapshot_record(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
+                timeout=15,
                 check=False,
             )
 
@@ -597,7 +655,7 @@ def _restore_snapshot_record(
                 if src.is_file():
                     dest = root / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dest)
+                    _copy_file_safe(src, dest)
                     restored_untracked.append(rel)
 
         payload = {
@@ -661,7 +719,7 @@ def _restore_snapshot_record(
             if src.is_file():
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dest)
+                _copy_file_safe(src, dest)
                 restored_files.append(rel)
 
     payload = {
@@ -964,26 +1022,6 @@ def handle_guard(
         except Exception:
             event = {}
 
-    # Re-resolve workspace config when hook runner sets cwd to the hook/plugin directory
-    # and passes the real workspace in event["cwd"] or event["workspacePaths"][0].
-    event_cwd: str | None = None
-    if isinstance(event.get("cwd"), str) and event["cwd"].strip():
-        event_cwd = event["cwd"].strip()
-    elif isinstance(event.get("workspacePaths"), list) and event["workspacePaths"]:
-        first_wp = event["workspacePaths"][0]
-        if isinstance(first_wp, str) and first_wp.strip():
-            event_cwd = first_wp.strip()
-
-    if event_cwd:
-        try:
-            candidate_dir = Path(event_cwd).resolve()
-            if candidate_dir.exists() and candidate_dir != config.workspace_root.resolve():
-                from ..config import resolve_config
-
-                config = resolve_config(cwd=candidate_dir, env=config.env)
-        except Exception:
-            pass
-
     # Support both Claude Code (tool_name / tool_input) and Antigravity (toolCall.name / toolCall.args)
     tool_call_obj = event.get("toolCall") if isinstance(event.get("toolCall"), dict) else {}
     tool_name = str(
@@ -1009,6 +1047,56 @@ def handle_guard(
         tool_input["file_path"] = str(args.file)
     if getattr(args, "command_str", None):
         tool_input["command"] = str(args.command_str)
+
+    # Re-resolve workspace config when hook runner sets cwd to the hook/plugin directory
+    # or operates across multiple workspacePaths (matching the workspace containing target files first).
+    candidate_targets = _extract_target_paths_from_tool_input(tool_name, tool_input)
+    ws_paths_raw = event.get("workspacePaths") if isinstance(event.get("workspacePaths"), list) else []
+    ws_dirs: list[Path] = []
+    for wp in ws_paths_raw:
+        if isinstance(wp, str) and wp.strip():
+            try:
+                p_resolved = Path(wp.strip()).resolve()
+                if p_resolved.exists():
+                    ws_dirs.append(p_resolved)
+            except Exception:
+                continue
+
+    matched_ws_dir: Path | None = None
+    for tp in candidate_targets:
+        try:
+            tp_path = Path(tp)
+            if tp_path.is_absolute():
+                tp_resolved = tp_path.resolve()
+                for wd in sorted(ws_dirs, key=lambda p: len(str(p)), reverse=True):
+                    if tp_resolved == wd or wd in tp_resolved.parents:
+                        matched_ws_dir = wd
+                        break
+            if matched_ws_dir is not None:
+                break
+        except Exception:
+            continue
+
+    event_cwd: Path | None = matched_ws_dir
+    if event_cwd is None:
+        if isinstance(event.get("cwd"), str) and event["cwd"].strip():
+            try:
+                c = Path(event["cwd"].strip()).resolve()
+                if c.exists():
+                    event_cwd = c
+            except Exception:
+                pass
+        elif ws_dirs:
+            event_cwd = ws_dirs[0]
+
+    if event_cwd is not None:
+        try:
+            if event_cwd != config.workspace_root.resolve():
+                from ..config import resolve_config
+
+                config = resolve_config(cwd=event_cwd, env=config.env)
+        except Exception:
+            pass
 
     force_json_cli = bool(getattr(args, "json", False)) and not bool(raw_input)
     runtime = detect_runtime_context(cwd=config.workspace_root, env=config.env)
@@ -1036,7 +1124,7 @@ def handle_guard(
         "mcp__filesystem__move_file",
     }
     if tool_name.lower() in edit_tools or "file_path" in tool_input or "Path" in tool_input or "TargetFile" in tool_input:
-        target_paths = _extract_target_paths_from_tool_input(tool_name, tool_input)
+        target_paths = candidate_targets
         for tp in target_paths:
             rel = _normalize_rel_path(tp, config.workspace_root)
             matched_frozen = match_frozen_glob(config, rel)
@@ -1063,10 +1151,18 @@ def handle_guard(
                     stdout_stream=stdout_stream,
                 )
 
-        # Auto-capture deduplicated pre-mutation savepoint
+        # Auto-capture deduplicated pre-mutation savepoint (best-effort: never crash PreToolUse on I/O errors)
         if target_paths:
             rel_first = _normalize_rel_path(target_paths[0], config.workspace_root)
-            create_savepoint_record(config, label=f"pre_edit:{rel_first}", allow_dedup=True)
+            try:
+                create_savepoint_record(
+                    config,
+                    label=f"pre_edit:{rel_first}",
+                    allow_dedup=True,
+                    auto_guard=True,
+                )
+            except Exception as exc:
+                emit_stderr(f"Auto-savepoint skipped before edit ({rel_first}): {exc}")
         return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)
 
     # 2. Shell / Bash execution tools
@@ -1091,7 +1187,15 @@ def handle_guard(
         lower_cmd = cmd_str.lower().strip()
         is_read_only = any(lower_cmd.startswith(pref) for pref in READ_ONLY_BASH_PREFIXES)
         if not is_read_only and cmd_str:
-            create_savepoint_record(config, label=f"pre_bash:{cmd_str[:36]}", allow_dedup=True)
+            try:
+                create_savepoint_record(
+                    config,
+                    label=f"pre_bash:{cmd_str[:36]}",
+                    allow_dedup=True,
+                    auto_guard=True,
+                )
+            except Exception as exc:
+                emit_stderr(f"Auto-savepoint skipped before command: {exc}")
         return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)
 
     return _emit_guard_decision(allow=True, force_json_cli=force_json_cli, stdout_stream=stdout_stream)

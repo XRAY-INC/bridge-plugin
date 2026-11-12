@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridge-plugin"
-version = "0.7.1"
+version = "0.7.2"
 description = "Customer CLI (bridge / brg) and stdio MCP plugin for Bridge (https://bridge.xray.tech) — context gating, organization custom instructions, seams, 1-click decisions, scope leases, savepoints/undo, frozen file locks, shared-login teammate identity, and task verification."
 readme = "README.md"
 license = { file = "LICENSE" }

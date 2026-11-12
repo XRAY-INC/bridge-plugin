@@ -1144,7 +1144,7 @@ def handle_setup(
             'COMMIT_MSG_FILE="$1"\n'
             'if [ -f ".bridge/state.json" ] && command -v python3 >/dev/null 2>&1; then\n'
             '  TASK_ID=$(python3 -c \'import json, subprocess; '
-            'b=subprocess.run(["git","rev-parse","--abbrev-ref","HEAD"],capture_output=True,text=True).stdout.strip(); '
+            'b=subprocess.run(["git","rev-parse","--abbrev-ref","HEAD"],capture_output=True,text=True,errors="replace").stdout.strip(); '
             's=json.load(open(".bridge/state.json")); '
             'print(s.get("branches",{}).get(b,{}).get("taskId") or "")\' 2>/dev/null)\n'
             '  if [ -n "$TASK_ID" ] && ! grep -q "Bridge-Task: $TASK_ID" "$COMMIT_MSG_FILE"; then\n'

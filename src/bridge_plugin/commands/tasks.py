@@ -367,6 +367,7 @@ def handle_tasks_start(
                 cwd=str(config.workspace_root),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
             )
             worktree_path = str(wt_dir)
@@ -376,6 +377,7 @@ def handle_tasks_start(
                 cwd=str(config.workspace_root),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
             )
             if res.returncode != 0:
@@ -384,6 +386,7 @@ def handle_tasks_start(
                     cwd=str(config.workspace_root),
                     capture_output=True,
                     text=True,
+                    errors="replace",
                     check=False,
                 )
 

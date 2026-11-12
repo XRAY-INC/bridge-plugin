@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -127,6 +128,20 @@ def compute_idempotency_key(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def copy_file_safe(src: Path, dst: Path) -> None:
+    """Copy file content and basic metadata without failing on SMB/NFS superuser chflags (e.g. SF_ARCHIVED)."""
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError:
+        try:
+            st = src.stat()
+            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+            shutil.copymode(src, dst)
+        except OSError:
+            pass
+
+
 def _run_git(args: Sequence[str], cwd: Path | None = None) -> str | None:
     try:
         proc = subprocess.run(
@@ -134,6 +149,7 @@ def _run_git(args: Sequence[str], cwd: Path | None = None) -> str | None:
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=3,
             check=False,
         )

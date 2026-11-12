@@ -17,6 +17,7 @@ from ..runtime import (
     EXIT_CONCURRENCY_BLOCK,
     EXIT_ERROR,
     EXIT_OK,
+    copy_file_safe,
     detect_git_branch,
     detect_runtime_context,
     emit_output,
@@ -324,6 +325,7 @@ def handle_worktree(
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
         )
         worktrees: list[dict[str, str]] = []
@@ -370,6 +372,7 @@ def handle_worktree(
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
         )
         if proc.returncode != 0:
@@ -378,11 +381,12 @@ def handle_worktree(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
             )
         # Hydrate .bridge.json into the linked worktree if present
         if config.config_path and config.config_path.is_file() and wt_path.is_dir():
-            shutil.copy2(config.config_path, wt_path / config.config_path.name)
+            copy_file_safe(config.config_path, wt_path / config.config_path.name)
 
         payload = {
             "ok": True,
@@ -406,6 +410,7 @@ def handle_worktree(
             cwd=str(root),
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
         )
         if wt_path.exists():
