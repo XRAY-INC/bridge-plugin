@@ -43,7 +43,7 @@ When the user invokes `/bridge-afk` or `/afk` (or asks you to work autonomously 
    ```bash
    brg savepoint create --label "afk-baseline"
    ```
-   - This records an off-branch Git snapshot under `refs/bridge-snapshots/<snap-id>` (or a directory snapshot in non-Git folders) without touching `HEAD` or `.git/index`.
+   - This records an off-branch Git snapshot under `refs/bridge-snapshots/<snap-id>` (storing untracked files deduplicated inside `.git/objects` + metadata in `.git/bridge/snapshots.json`, or content-addressed under `~/.cache/bridge` for non-Git folders, leaving `<repo>/.bridge/` clean) without touching `HEAD` or `.git/index`. Evicted or legacy snapshots can be reclaimed anytime via `brg savepoint prune`.
    - At any point, a single step can be rewound via `brg undo` or the entire run can be rolled back via `brg rollback afk-baseline` (which rescues newly created untracked files into `.bridge/rescued/` instead of deleting them).
 
 2. **Freeze Invariant Files**:

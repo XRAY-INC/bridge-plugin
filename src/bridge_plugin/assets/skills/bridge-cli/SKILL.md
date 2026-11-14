@@ -183,9 +183,14 @@ brg handoff "Completed SAML staging handler; next step: SCIM webhook verificatio
 
 ### Local Git Savepoints, Undo / Rollback, Frozen File Locks & Guard
 ```bash
-# Capture an off-branch Git savepoint (or directory backup in non-Git folders)
+# Capture an off-branch Git savepoint (stored in .git/objects & .git/bridge, or ~/.cache/bridge in non-Git folders)
 brg savepoint create --label "before-auth-refactor"
 brg savepoint list --json
+
+# Reclaim legacy .bridge/snapshots bloat or orphaned savepoint refs (single repo or entire code directory)
+brg savepoint prune
+brg savepoint prune --all
+brg savepoint prune --scan ~/Documents/Code
 
 # Rewind a single step or roll back to a named savepoint (rescuing untracked files to .bridge/rescued/)
 brg undo --dry-run

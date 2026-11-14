@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Universal Agent Skills (agentskills.io) & MCP catalog for Bridge (https://bridge.xray.tech) — compatible with OpenAI Codex, Claude Code, Cursor, Windsurf, and Gemini CLI.",
-    "version": "0.7.3"
+    "version": "0.7.5"
   },
   "plugins": [
     {
       "name": "bridge",
       "source": "./",
       "description": "Bridge Context Gate (bridge_context_pull / brg context), Organization Custom Instructions, Scoped Morning Briefs (bridge_brief_latest), 1-Click Decisions, seam logging, and scope claims.",
-      "version": "0.7.3",
+      "version": "0.7.5",
       "author": {
         "name": "Bridge Engineering",
         "email": "engineering@xray.tech"

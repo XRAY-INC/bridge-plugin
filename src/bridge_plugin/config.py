@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import time
@@ -290,8 +291,36 @@ class BridgeConfig:
         return self.bridge_dir / "frozen.json"
 
     @property
+    def git_dir(self) -> Path | None:
+        return resolve_git_dirs(self.workspace_root)[0]
+
+    @property
+    def git_common_dir(self) -> Path | None:
+        return resolve_git_dirs(self.workspace_root)[1]
+
+    @property
+    def cache_dir(self) -> Path:
+        return get_cache_dir(env=self.env)
+
+    @property
+    def snapshots_dir(self) -> Path:
+        gd = self.git_dir
+        if gd is not None:
+            return gd / "bridge"
+        ws_hash = hashlib.sha256(str(self.workspace_root.resolve()).encode("utf-8")).hexdigest()[:16]
+        return self.cache_dir / "snapshots" / ws_hash
+
+    @property
     def snapshots_path(self) -> Path:
+        return self.snapshots_dir / "snapshots.json"
+
+    @property
+    def legacy_snapshots_path(self) -> Path:
         return self.bridge_dir / "snapshots.json"
+
+    @property
+    def legacy_snapshots_dir(self) -> Path:
+        return self.bridge_dir / "snapshots"
 
     @property
     def org_instructions_json_path(self) -> Path:
@@ -300,6 +329,68 @@ class BridgeConfig:
     @property
     def org_instructions_md_path(self) -> Path:
         return self.bridge_dir / "org_instructions.md"
+
+
+def resolve_git_dirs(workspace_root: Path) -> tuple[Path | None, Path | None]:
+    """Return (git_dir, git_common_dir) for workspace_root, or (None, None) outside Git repos."""
+    if not workspace_root.exists():
+        return (None, None)
+
+    dot_git = workspace_root / ".git"
+    if dot_git.is_dir():
+        gd = dot_git.resolve()
+        return (gd, gd)
+    if dot_git.is_file():
+        try:
+            text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+            if text.lower().startswith("gitdir:"):
+                raw_gd = text.split(":", 1)[1].strip()
+                gd_path = Path(raw_gd)
+                gd = (gd_path if gd_path.is_absolute() else (workspace_root / gd_path)).resolve()
+                if gd.is_dir():
+                    common_file = gd / "commondir"
+                    common_dir = gd
+                    if common_file.is_file():
+                        rel_common = common_file.read_text(encoding="utf-8", errors="replace").strip()
+                        if rel_common:
+                            cm_path = Path(rel_common)
+                            candidate = (cm_path if cm_path.is_absolute() else (gd / cm_path)).resolve()
+                            if candidate.is_dir():
+                                common_dir = candidate
+                    return (gd, common_dir)
+        except Exception:
+            pass
+
+    raw_gd = _run_git(["rev-parse", "--git-dir"], cwd=workspace_root)
+    if not raw_gd:
+        return (None, None)
+    gd_path = Path(raw_gd)
+    gd = (gd_path if gd_path.is_absolute() else (workspace_root / gd_path)).resolve()
+    if not gd.is_dir():
+        return (None, None)
+
+    raw_common = _run_git(["rev-parse", "--git-common-dir"], cwd=workspace_root)
+    common_dir = gd
+    if raw_common:
+        cm_path = Path(raw_common)
+        candidate = (cm_path if cm_path.is_absolute() else (workspace_root / cm_path)).resolve()
+        if candidate.is_dir():
+            common_dir = candidate
+    return (gd, common_dir)
+
+
+def get_cache_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return Bridge's local cache directory (~/.cache/bridge or test/XDG override)."""
+    environ = env if env is not None else os.environ
+    override = environ.get("BRIDGE_CACHE_DIR", "").strip()
+    if override:
+        return Path(override)
+    cred_override = environ.get("BRIDGE_CREDENTIALS_PATH", "").strip()
+    if cred_override:
+        return Path(cred_override).resolve().parent / ".bridge-cache"
+    xdg = environ.get("XDG_CACHE_HOME", "").strip()
+    base = Path(xdg) if xdg else (Path.home() / ".cache")
+    return base / "bridge"
 
 
 def get_credentials_path(env: Mapping[str, str] | None = None) -> Path:

@@ -649,13 +649,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 7. Local Safety & Unattended AFK Guard: savepoint, undo, rollback, freeze, unfreeze, guard
     for sp_cmd in ("savepoint", "snapshot"):
-        savepoint_p = subparsers.add_parser(sp_cmd, help="Create or list off-branch Git / workspace savepoints.")
+        savepoint_p = subparsers.add_parser(sp_cmd, help="Create, list, or prune off-branch Git / workspace savepoints.")
         savepoint_sub = savepoint_p.add_subparsers(dest="savepoint_action")
         sp_create = savepoint_sub.add_parser("create", help="Capture an off-branch savepoint.")
         sp_create.add_argument("--label", "-m", default="manual", help="Savepoint label.")
         sp_create.add_argument("--json", action="store_true", default=False)
         sp_list = savepoint_sub.add_parser("list", help="List recorded savepoints.")
         sp_list.add_argument("--json", action="store_true", default=False)
+        for prune_cmd in ("prune", "gc", "clean"):
+            sp_prune = savepoint_sub.add_parser(
+                prune_cmd,
+                help="Prune evicted savepoints, orphaned Git snapshot refs, cache blobs, and legacy .bridge/snapshots folders.",
+            )
+            sp_prune.add_argument("--keep", type=int, default=None, help="Retain at most N recent savepoints (default: 25).")
+            sp_prune.add_argument("--all", action="store_true", default=False, help="Delete all local savepoints and run aggressive Git GC.")
+            sp_prune.add_argument("--scan", default=None, help="Scan a parent directory (e.g. ~/Documents/Code) and prune all child workspaces.")
+            sp_prune.add_argument("--json", action="store_true", default=False)
         savepoint_p.add_argument("--label", "-m", default="manual", help="Savepoint label when called directly.")
         savepoint_p.add_argument("--json", action="store_true", default=False)
 
