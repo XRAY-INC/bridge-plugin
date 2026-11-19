@@ -162,6 +162,57 @@ def _parse_flows_input(raw_flows: str | list[Any] | None) -> list[dict[str, Any]
     return [{"optionIndex": 0, "nodes": nodes, "edges": edges}] if nodes else []
 
 
+def _parse_caveats_input(raw_caveats: str | list[Any] | None) -> list[str]:
+    if not raw_caveats:
+        return []
+    items: list[str] = []
+    raw_list = raw_caveats if isinstance(raw_caveats, list) else [raw_caveats]
+    for entry in raw_list:
+        if entry is None:
+            continue
+        text = str(entry).strip()
+        if not text:
+            continue
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    items.extend(str(v).strip() for v in parsed if str(v).strip())
+                    continue
+            except Exception:
+                pass
+        for line in text.replace("|", "\n").splitlines():
+            cleaned = line.strip()
+            if cleaned:
+                items.append(cleaned)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
+def _parse_confidence_input(raw_confidence: Any) -> int | str | None:
+    if raw_confidence is None or isinstance(raw_confidence, bool):
+        return None
+    if isinstance(raw_confidence, (int, float)):
+        return max(0, min(100, int(round(raw_confidence))))
+    text = str(raw_confidence).strip()
+    if not text:
+        return None
+    numeric_candidate = text[:-1].strip() if text.endswith("%") else text
+    try:
+        return max(0, min(100, int(round(float(numeric_candidate)))))
+    except ValueError:
+        lowered = text.lower()
+        if lowered in ("high", "medium", "med", "low"):
+            return "medium" if lowered == "med" else lowered
+        return text
+
+
 def handle_decide_list(
     args: Any,
     config: BridgeConfig,
@@ -243,9 +294,24 @@ def handle_decide_show(
         f"  Title        : {decision.get('title')}",
         f"  Context      : {decision.get('contextSummary')}",
         f"  Blocked Task : {decision.get('blockedTaskId') or '(none)'}",
+    ]
+    if decision.get("aiConfidence") is not None:
+        reason = decision.get("aiConfidenceReason")
+        human_lines.append(
+            f"  AI Confidence: {decision.get('aiConfidence')}%"
+            + (f" ({reason})" if reason else "")
+        )
+    caveats = decision.get("caveats") if isinstance(decision.get("caveats"), list) else []
+    if caveats:
+        human_lines.append("  Caveats      :")
+        for cav in caveats:
+            human_lines.append(f"    - {cav}")
+    if decision.get("additionalInfo"):
+        human_lines.append(f"  Extra Notes  : {decision.get('additionalInfo')}")
+    human_lines.extend([
         "  Options      :",
         *[f"    - [{opt.get('id')}] {opt.get('label')}: {opt.get('description') or opt.get('summary') or ''}" for opt in options if isinstance(opt, dict)],
-    ]
+    ])
     if rankings:
         human_lines.append("  Weighted Rankings:")
         for r in rankings:
@@ -306,6 +372,11 @@ def handle_decide_propose(
         summary=f"{title}:{context_summary}:{mode}:{','.join(recipients)}",
     )
 
+    confidence = _parse_confidence_input(getattr(args, "confidence", None))
+    confidence_reason = str(getattr(args, "confidence_reason", "") or "").strip()
+    caveats = _parse_caveats_input(getattr(args, "caveats", None))
+    additional_info = str(getattr(args, "additional_info", "") or "").strip()
+
     body: dict[str, Any] = {
         "title": title,
         "contextSummary": context_summary,
@@ -324,6 +395,14 @@ def handle_decide_propose(
         body["scores"] = scores
     if flows:
         body["flows"] = flows
+    if confidence is not None:
+        body["confidence"] = confidence
+    if confidence_reason:
+        body["confidenceReason"] = confidence_reason
+    if caveats:
+        body["caveats"] = caveats
+    if additional_info:
+        body["additionalInfo"] = additional_info
     if config.organization_id:
         body["organizationId"] = config.organization_id
     if config.repository:
@@ -492,6 +571,20 @@ def handle_decide_edit(
         body["criteria"] = _parse_criteria_input(args.criteria)
     if getattr(args, "scores", None):
         body["scores"] = _parse_scores_input(args.scores)
+    confidence = _parse_confidence_input(getattr(args, "confidence", None))
+    if confidence is not None:
+        body["confidence"] = confidence
+    if getattr(args, "confidence_reason", None):
+        body["confidenceReason"] = str(args.confidence_reason).strip()
+    caveats = _parse_caveats_input(getattr(args, "caveats", None))
+    if caveats:
+        body["caveats"] = caveats
+        if bool(getattr(args, "append_caveats", False)):
+            body["appendCaveats"] = True
+    if getattr(args, "additional_info", None):
+        body["additionalInfo"] = str(args.additional_info).strip()
+        if bool(getattr(args, "append_info", False)):
+            body["appendAdditionalInfo"] = True
     if config.organization_id:
         body["organizationId"] = config.organization_id
 
@@ -500,6 +593,69 @@ def handle_decide_edit(
         f"Updated decision {decision_id} in place."
         if resp.ok
         else f"Error updating decision {decision_id}: {resp.error}"
+    )
+    emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
+    return resp.exit_code
+
+
+def handle_decide_annotate(
+    args: Any,
+    config: BridgeConfig,
+    client: BridgeClient,
+    *,
+    force_json: bool = False,
+    stdout_stream: Any = None,
+) -> int:
+    """Attach or append AI confidence, caveats, and additional notes to a decision."""
+    decision_id = str(getattr(args, "decision_id", "")).strip()
+    if not decision_id:
+        emit_output(
+            {"ok": False, "error": "DECISION_ID_REQUIRED"},
+            "Error: Decision ID is required.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    confidence = _parse_confidence_input(getattr(args, "confidence", None))
+    confidence_reason = str(getattr(args, "confidence_reason", "") or "").strip()
+    caveats = _parse_caveats_input(getattr(args, "caveats", None))
+    additional_info = str(getattr(args, "additional_info", "") or "").strip()
+    replace_caveats = bool(getattr(args, "replace_caveats", False))
+    replace_info = bool(getattr(args, "replace_info", False))
+
+    if confidence is None and not confidence_reason and not caveats and not additional_info:
+        emit_output(
+            {"ok": False, "error": "ANNOTATION_REQUIRED"},
+            "Error: Provide at least one of --confidence, --confidence-reason, --caveat, or --additional-info.",
+            force_json=force_json,
+            stdout_stream=stdout_stream,
+        )
+        return EXIT_ERROR
+
+    body: dict[str, Any] = {
+        "action": "ANNOTATE",
+        "decisionId": decision_id,
+    }
+    if confidence is not None:
+        body["confidence"] = confidence
+    if confidence_reason:
+        body["confidenceReason"] = confidence_reason
+    if caveats:
+        body["caveats"] = caveats
+        body["appendCaveats"] = not replace_caveats
+    if additional_info:
+        body["additionalInfo"] = additional_info
+        if not replace_info:
+            body["appendAdditionalInfo"] = True
+    if config.organization_id:
+        body["organizationId"] = config.organization_id
+
+    resp = client.request("POST", "/api/v1/decide/escalate", json_body=body)
+    human = (
+        f"Annotated decision {decision_id} with AI confidence and caveats."
+        if resp.ok
+        else f"Error annotating decision {decision_id}: {resp.error}"
     )
     emit_output(resp.data, human, force_json=force_json, stdout_stream=stdout_stream)
     return resp.exit_code

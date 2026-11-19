@@ -722,3 +722,122 @@ def test_mcp_bridge_seam_supports_historical_and_created_at(tmp_path: Path) -> N
     assert captured[-1]["body"]["historical"] is True
 
 
+def test_mcp_bridge_decide_confidence_caveats_and_annotate(tmp_path: Path) -> None:
+    """Verify MCP `bridge_decide` supports confidence, caveats, additional_info, edit, and annotate."""
+    (tmp_path / ".bridge.json").write_text(
+        json.dumps(
+            {
+                "plugin": "bridge",
+                "organizationId": "org_northstar",
+                "apiUrl": "https://bridge.xray.tech",
+                "repository": "northstar/web-app",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        "BRIDGE_ORG_ID": "org_northstar",
+        "BRIDGE_API_KEY": "xrkey_v1.mcp_test_token",
+        "BRIDGE_CREDENTIALS_PATH": str(tmp_path / "creds.json"),
+    }
+    captured: list[dict[str, Any]] = []
+
+    def mcp_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        body = json.loads(req.data.decode("utf-8")) if req.data else {}
+        captured.append({"url": req.full_url, "method": req.get_method(), "body": body})
+        return 200, json.dumps(
+            {
+                "ok": True,
+                "decision": {
+                    "id": body.get("decisionId") or "dec_mcp_1",
+                    "title": body.get("title") or "Delivery route",
+                    "aiConfidence": body.get("confidence"),
+                    "caveats": body.get("caveats", []),
+                    "additionalInfo": body.get("additionalInfo"),
+                },
+            }
+        ).encode("utf-8")
+
+    cfg = resolve_config(cwd=tmp_path, env=env)
+    mcp_client = BridgeClient(cfg, agent_id="claude-code", transport=mcp_transport, env=env)
+
+    res_prop = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 95,
+            "method": "tools/call",
+            "params": {
+                "name": "bridge_decide",
+                "arguments": {
+                    "action": "propose",
+                    "title": "Shift South Van Route",
+                    "context": "Move Tuesday stops to Wednesday morning.",
+                    "options": "Move to Wednesday,Keep Tuesday",
+                    "confidence": 88,
+                    "confidence_reason": "90% of buyers prefer morning windows.",
+                    "caveats": ["Excludes cold-storage accounts"],
+                    "additional_info": "Saves 18 miles per week.",
+                },
+            },
+        },
+        config=cfg,
+        client=mcp_client,
+    )
+    assert json.loads(res_prop["result"]["content"][0]["text"])["ok"] is True
+    assert captured[-1]["body"]["confidence"] == 88
+    assert captured[-1]["body"]["confidenceReason"] == "90% of buyers prefer morning windows."
+    assert captured[-1]["body"]["caveats"] == ["Excludes cold-storage accounts"]
+    assert captured[-1]["body"]["additionalInfo"] == "Saves 18 miles per week."
+
+    res_ann = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 96,
+            "method": "tools/call",
+            "params": {
+                "name": "bridge_decide",
+                "arguments": {
+                    "action": "annotate",
+                    "decision_id": "dec_mcp_1",
+                    "confidence": "72%",
+                    "caveats": "Risk A|Risk B",
+                    "additional_info": "Follow-up note from dispatch",
+                },
+            },
+        },
+        config=cfg,
+        client=mcp_client,
+    )
+    assert json.loads(res_ann["result"]["content"][0]["text"])["ok"] is True
+    assert captured[-1]["body"]["action"] == "ANNOTATE"
+    assert captured[-1]["body"]["confidence"] == 72
+    assert captured[-1]["body"]["caveats"] == ["Risk A", "Risk B"]
+    assert captured[-1]["body"]["appendCaveats"] is True
+    assert captured[-1]["body"]["appendAdditionalInfo"] is True
+
+    res_edit = handle_jsonrpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 97,
+            "method": "tools/call",
+            "params": {
+                "name": "bridge_decide",
+                "arguments": {
+                    "action": "edit",
+                    "decision_id": "dec_mcp_1",
+                    "confidence": "high",
+                    "caveats": ["Cap risk"],
+                    "append_caveats": True,
+                },
+            },
+        },
+        config=cfg,
+        client=mcp_client,
+    )
+    assert json.loads(res_edit["result"]["content"][0]["text"])["ok"] is True
+    assert captured[-1]["body"]["action"] == "UPDATE"
+    assert captured[-1]["body"]["confidence"] == "high"
+    assert captured[-1]["body"]["appendCaveats"] is True
+
+
+

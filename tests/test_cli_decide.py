@@ -498,3 +498,183 @@ def test_multi_workspace_upstream_org_routing(tmp_path: Path) -> None:
     assert ctx_data["agencyContext"]["teamRoster"][0]["email"] == "alice@partner.example"
 
 
+def test_decide_propose_edit_annotate_and_show_ai_metadata(tmp_path: Path) -> None:
+    """Verify AI confidence, caveats, and additionalInfo across propose, edit, annotate, and show."""
+    env = _setup_env(tmp_path)
+    sent: list[dict[str, Any]] = []
+
+    def ai_transport(req: Any, _timeout: float) -> tuple[int, bytes]:
+        url = req.full_url
+        method = req.get_method()
+        body = json.loads(req.data.decode("utf-8")) if req.data else None
+        sent.append({"method": method, "url": url, "body": body})
+        if "/api/v1/decide/escalate" in url and method == "POST":
+            return 200, json.dumps(
+                {
+                    "ok": True,
+                    "decision": {
+                        "id": (body or {}).get("decisionId") or "dec_ai_1",
+                        "title": (body or {}).get("title") or "Delivery schedule",
+                        "status": "OPEN",
+                        "aiConfidence": (body or {}).get("confidence"),
+                        "aiConfidenceReason": (body or {}).get("confidenceReason"),
+                        "caveats": (body or {}).get("caveats", []),
+                        "additionalInfo": (body or {}).get("additionalInfo"),
+                    },
+                }
+            ).encode("utf-8")
+        return 200, json.dumps(
+            {
+                "ok": True,
+                "decisions": [
+                    {
+                        "id": "dec_ai_1",
+                        "title": "Friday delivery cutoff",
+                        "contextSummary": "Should Friday orders roll to Monday?",
+                        "status": "OPEN",
+                        "urgency": "HIGH",
+                        "aiConfidence": 84,
+                        "aiConfidenceReason": "Based on the last 30 days of route sheets.",
+                        "caveats": ["Assumes cold-chain trucks restock Thursday"],
+                        "additionalInfo": "Driver overtime stays flat under Monday dispatch.",
+                        "options": [{"id": "opt_1", "label": "Hold for Monday", "summary": "Avoid overtime"}],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+
+    # 1. Propose with --confidence, --confidence-reason, repeated --caveat, and --additional-info
+    out_prop = NonTTYBuffer()
+    code_prop = run_cli(
+        [
+            "decide",
+            "propose",
+            "--title",
+            "Friday delivery cutoff",
+            "--context",
+            "Decide whether afternoon stops roll to Monday.",
+            "--options",
+            "Hold for Monday,Deliver Saturday",
+            "--confidence",
+            "84%",
+            "--confidence-reason",
+            "Route sheets show 9 of 10 buyers accept Monday.",
+            "--caveat",
+            "Excludes urgent cold-chain orders",
+            "--caveat",
+            "Requires Dispatch confirmation by 3 PM",
+            "--additional-info",
+            "Driver overtime drops by 4 hours a week.",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_prop,
+        transport=ai_transport,
+    )
+    assert code_prop == EXIT_OK
+    prop_body = sent[-1]["body"]
+    assert prop_body["confidence"] == 84
+    assert prop_body["confidenceReason"] == "Route sheets show 9 of 10 buyers accept Monday."
+    assert prop_body["caveats"] == [
+        "Excludes urgent cold-chain orders",
+        "Requires Dispatch confirmation by 3 PM",
+    ]
+    assert prop_body["additionalInfo"] == "Driver overtime drops by 4 hours a week."
+
+    # 2. Annotate appends caveats and additionalInfo by default
+    out_ann = NonTTYBuffer()
+    code_ann = run_cli(
+        [
+            "decide",
+            "annotate",
+            "dec_ai_1",
+            "--confidence",
+            "78",
+            "--confidence-reason",
+            "Updated after holiday calendar check.",
+            "--caveat",
+            "Watch Nov 27 holiday backlog|Confirm East Loop backup driver",
+            "--additional-info",
+            "Checked with Sarah in Ops.",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_ann,
+        transport=ai_transport,
+    )
+    assert code_ann == EXIT_OK
+    ann_body = sent[-1]["body"]
+    assert ann_body["action"] == "ANNOTATE"
+    assert ann_body["decisionId"] == "dec_ai_1"
+    assert ann_body["confidence"] == 78
+    assert ann_body["caveats"] == [
+        "Watch Nov 27 holiday backlog",
+        "Confirm East Loop backup driver",
+    ]
+    assert ann_body["appendCaveats"] is True
+    assert ann_body["additionalInfo"] == "Checked with Sarah in Ops."
+    assert ann_body["appendAdditionalInfo"] is True
+
+    # 3. Edit supports confidence/caveats/additionalInfo + --append-caveats / --append-info
+    out_edit = NonTTYBuffer()
+    code_edit = run_cli(
+        [
+            "decide",
+            "edit",
+            "dec_ai_1",
+            "--confidence",
+            "high",
+            "--caveat",
+            "Lock cutoff before Thursday noon",
+            "--append-caveats",
+            "--additional-info",
+            "Final pricing signoff attached.",
+            "--append-info",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_edit,
+        transport=ai_transport,
+    )
+    assert code_edit == EXIT_OK
+    edit_body = sent[-1]["body"]
+    assert edit_body["action"] == "UPDATE"
+    assert edit_body["confidence"] == "high"
+    assert edit_body["caveats"] == ["Lock cutoff before Thursday noon"]
+    assert edit_body["appendCaveats"] is True
+    assert edit_body["appendAdditionalInfo"] is True
+
+    # 4. Empty annotate returns error without network call
+    before_err = len(sent)
+    out_err = NonTTYBuffer()
+    code_err = run_cli(
+        ["decide", "annotate", "dec_ai_1"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_err,
+        transport=ai_transport,
+    )
+    assert code_err != EXIT_OK
+    assert len(sent) == before_err
+
+    # 5. Show prints human-readable AI confidence, caveats, and extra notes
+    class _TTYBuffer(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    out_show = _TTYBuffer()
+    code_show = run_cli(
+        ["decide", "show", "dec_ai_1"],
+        cwd=tmp_path,
+        env=env,
+        stdout_stream=out_show,
+        transport=ai_transport,
+    )
+    assert code_show == EXIT_OK
+    rendered = out_show.getvalue()
+    assert "AI Confidence: 84%" in rendered
+    assert "Assumes cold-chain trucks restock Thursday" in rendered
+    assert "Driver overtime stays flat under Monday dispatch." in rendered
+
+
+

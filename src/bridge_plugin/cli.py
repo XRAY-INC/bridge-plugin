@@ -31,6 +31,7 @@ from .commands.context import (
     handle_instructions,
 )
 from .commands.decide import (
+    handle_decide_annotate,
     handle_decide_check,
     handle_decide_edit,
     handle_decide_list,
@@ -424,6 +425,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dec_prop_p.add_argument("--scores", help="JSON array or comma-separated 'optIdx:critIdx:score[:rationale]' initial matrix scores.")
     dec_prop_p.add_argument("--flow", "--flows", dest="flow", help="JSON array of Impact Flow Simulator nodes/edges or pipe-separated 'id:label:kind' nodes.")
+    dec_prop_p.add_argument("--confidence", help="AI confidence score (0-100) or level (high, medium, low).")
+    dec_prop_p.add_argument("--confidence-reason", dest="confidence_reason", help="Why AI holds that confidence level.")
+    dec_prop_p.add_argument("--caveat", "--caveats", action="append", dest="caveats", help="AI caveat or risk note (repeatable or pipe-separated / JSON array).")
+    dec_prop_p.add_argument("--additional-info", "--notes", dest="additional_info", help="Extra background context or plain-English notes for reviewers.")
     dec_prop_p.add_argument("--task", help="Blocked task ID (defaults to current branch task).")
     dec_prop_p.add_argument("--job", help="Source agent job ID.")
     dec_prop_p.add_argument("--json", action="store_true", default=False)
@@ -452,7 +457,24 @@ def build_parser() -> argparse.ArgumentParser:
         dec_edit_p.add_argument("--options", help="Updated options (comma-separated labels or JSON array with pros/cons).")
         dec_edit_p.add_argument("--criteria", help="Updated criteria ('Name:Weight' pairs or JSON array).")
         dec_edit_p.add_argument("--scores", help="Updated matrix scores ('optIdx:critIdx:score[:rationale]' or JSON array).")
+        dec_edit_p.add_argument("--confidence", help="AI confidence score (0-100) or level (high, medium, low).")
+        dec_edit_p.add_argument("--confidence-reason", dest="confidence_reason", help="Why AI holds that confidence level.")
+        dec_edit_p.add_argument("--caveat", "--caveats", action="append", dest="caveats", help="AI caveat or risk note (repeatable or pipe-separated / JSON array).")
+        dec_edit_p.add_argument("--append-caveats", dest="append_caveats", action="store_true", default=False, help="Append caveats instead of replacing existing ones.")
+        dec_edit_p.add_argument("--additional-info", "--notes", dest="additional_info", help="Extra background context or plain-English notes.")
+        dec_edit_p.add_argument("--append-info", dest="append_info", action="store_true", default=False, help="Append additional info instead of replacing existing notes.")
         dec_edit_p.add_argument("--json", action="store_true", default=False)
+
+    for ann_cmd in ("annotate", "enrich", "note"):
+        dec_ann_p = decide_sub.add_parser(ann_cmd, help="Attach or append AI confidence, caveats, and additional notes to a decision.")
+        dec_ann_p.add_argument("decision_id", help="Decision ID.")
+        dec_ann_p.add_argument("--confidence", help="AI confidence score (0-100) or level (high, medium, low).")
+        dec_ann_p.add_argument("--confidence-reason", dest="confidence_reason", help="Why AI holds that confidence level.")
+        dec_ann_p.add_argument("--caveat", "--caveats", action="append", dest="caveats", help="AI caveat or risk note (repeatable or pipe-separated / JSON array).")
+        dec_ann_p.add_argument("--replace-caveats", dest="replace_caveats", action="store_true", default=False, help="Replace existing caveats instead of appending.")
+        dec_ann_p.add_argument("--additional-info", "--notes", dest="additional_info", help="Extra background context or plain-English notes.")
+        dec_ann_p.add_argument("--replace-info", dest="replace_info", action="store_true", default=False, help="Replace existing extra notes instead of appending.")
+        dec_ann_p.add_argument("--json", action="store_true", default=False)
 
     for retract_cmd in ("retract", "rm", "delete"):
         dec_ret_p = decide_sub.add_parser(retract_cmd, help="Retract (archive) or delete a decision so it does not clutter /decide.")
@@ -937,6 +959,8 @@ def run_cli(
             return handle_decide_resolve(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub in ("edit", "update"):
             return handle_decide_edit(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
+        if sub in ("annotate", "enrich", "note"):
+            return handle_decide_annotate(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub in ("retract", "rm", "delete"):
             return handle_decide_retract(args, config, client, force_json=force_json, stdout_stream=stdout_stream)
         if sub == "check":

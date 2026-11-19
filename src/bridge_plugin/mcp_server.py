@@ -20,7 +20,9 @@ from .commands.context import (
     handle_context_pull,
 )
 from .commands.decide import (
+    handle_decide_annotate,
     handle_decide_check,
+    handle_decide_edit,
     handle_decide_list,
     handle_decide_propose,
     handle_decide_resolve,
@@ -121,7 +123,7 @@ MCP_PROMPTS: list[dict[str, Any]] = [
 MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bridge_context",
-        "description": "Read or update Bridge status, branch binding, claims, teammate user identity, and scratchpad.",
+        "description": "Read/update Bridge status, branch, claims, user, scratchpad.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -135,7 +137,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_context_pull",
-        "description": "Pull 7-day org context: tasks, quotes, citations, decisions, leases, seams, briefs & 72h corrections.",
+        "description": "Pull 7d org context: tasks, decisions, leases, seams, briefs, corrections.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -147,7 +149,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_brief_latest",
-        "description": "Fetch latest ORG/TEAM Morning Briefs and 72h Corrections.",
+        "description": "Fetch ORG/TEAM Morning Briefs and 72h corrections.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -158,7 +160,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_seam",
-        "description": "Log, edit, retract, or list seams (win, decision, friction, handoff).",
+        "description": "Log, edit, retract, or list seams.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -176,13 +178,13 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_decide",
-        "description": "List, propose, score, resolve, or check 1-Click Decisions (--to recipients, blocking/advisory).",
+        "description": "List, propose, edit, annotate, score, resolve, or check 1-Click Decisions.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "propose", "score", "resolve", "status"],
+                    "enum": ["list", "propose", "edit", "annotate", "score", "resolve", "status"],
                     "default": "list",
                 },
                 "decision_id": {"type": "string"},
@@ -193,6 +195,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "to": {"type": "string"},
                 "options": {"type": "string"},
                 "criteria": {"type": "string"},
+                "confidence": {"description": "0-100|high|med|low"},
+                "confidence_reason": {"type": "string"},
+                "caveats": {"description": "string|string[]"},
+                "append_caveats": {"type": "boolean"},
+                "additional_info": {"type": "string"},
                 "option": {"type": "string"},
                 "criterion": {"type": "string"},
                 "score": {"type": "integer", "minimum": 1, "maximum": 10},
@@ -203,7 +210,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_scope",
-        "description": "Claim, release, list scope leases, or freeze/unfreeze/savepoint/undo local files.",
+        "description": "Claim/release/list leases; freeze/savepoint/undo files.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -222,7 +229,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_job",
-        "description": "List, dispatch, claim, complete, or compile capsules for Bridge agent jobs.",
+        "description": "List, dispatch, claim, complete, or compile agent jobs.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -238,7 +245,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bridge_fact",
-        "description": "Ingest a bounded (<=280 char) verification fact for task reconciliation.",
+        "description": "Ingest <=280-char verification fact for task reconciliation.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -622,10 +629,42 @@ def call_mcp_tool_handler(
                 advisory=bool(args_dict.get("advisory", False)),
                 scores=args_dict.get("scores"),
                 flow=args_dict.get("flow") or args_dict.get("flows"),
+                confidence=args_dict.get("confidence"),
+                confidence_reason=args_dict.get("confidence_reason"),
+                caveats=args_dict.get("caveats"),
+                additional_info=args_dict.get("additional_info"),
                 task=args_dict.get("task_id"),
                 job=args_dict.get("job_id"),
             )
             code = handle_decide_propose(ns, config, client, force_json=True, stdout_stream=buf)
+        elif action == "edit":
+            ns = argparse.Namespace(
+                decision_id=args_dict.get("decision_id") or "",
+                title=args_dict.get("title"),
+                context=args_dict.get("context"),
+                urgency=args_dict.get("urgency"),
+                options=args_dict.get("options"),
+                criteria=args_dict.get("criteria"),
+                scores=args_dict.get("scores"),
+                confidence=args_dict.get("confidence"),
+                confidence_reason=args_dict.get("confidence_reason"),
+                caveats=args_dict.get("caveats"),
+                append_caveats=bool(args_dict.get("append_caveats", False)),
+                additional_info=args_dict.get("additional_info"),
+                append_info=bool(args_dict.get("append_additional_info", False)),
+            )
+            code = handle_decide_edit(ns, config, client, force_json=True, stdout_stream=buf)
+        elif action == "annotate":
+            ns = argparse.Namespace(
+                decision_id=args_dict.get("decision_id") or "",
+                confidence=args_dict.get("confidence"),
+                confidence_reason=args_dict.get("confidence_reason"),
+                caveats=args_dict.get("caveats"),
+                replace_caveats=bool(args_dict.get("replace_caveats", False)),
+                additional_info=args_dict.get("additional_info"),
+                replace_info=bool(args_dict.get("replace_info", False)),
+            )
+            code = handle_decide_annotate(ns, config, client, force_json=True, stdout_stream=buf)
         elif action == "score":
             ns = argparse.Namespace(
                 decision_id=args_dict.get("decision_id") or "",
