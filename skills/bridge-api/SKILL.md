@@ -78,8 +78,8 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
   ```
 
 ### 2.4 1-Click Decisions (`Decide`)
-- **`GET /api/v1/decide?status=OPEN`** — List decisions with weighted criteria, `deliveryMode` (`"BLOCKING"` | `"ADVISORY"`), and computed option rankings.
-- **`POST /api/v1/decide/escalate`** — Create & distribute a 1-Click Decision Card (`to` / `recipients` resolves teammate handles/names/emails, mints 72h 1-Click Magic Links, and sends rich Decision Card emails + Slack notifications):
+- **`GET /api/v1/decide?status=OPEN`** — List decisions with weighted criteria, `deliveryMode` (`"BLOCKING"` | `"ADVISORY"`), AI confidence (`aiConfidence`, `aiConfidenceReason`), `caveats`, `additionalInfo`, and computed option rankings.
+- **`POST /api/v1/decide/escalate`** — Create, update (`action: "UPDATE"`), or annotate (`action: "ANNOTATE"`) a 1-Click Decision Card (`to` / `recipients` resolves teammate handles/names/emails, mints 72h 1-Click Magic Links, and sends rich Decision Card emails + Slack notifications):
   ```json
   {
     "title": "Cache Invalidation Strategy",
@@ -88,8 +88,12 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
     "mode": "ADVISORY",
     "to": ["alice", "bob"],
     "blockedTaskId": "task_104",
+    "confidence": 82,
+    "confidenceReason": "Strong fit based on last month's ticket volume.",
+    "caveats": ["Assumes weekend cutoff works for enterprise buyers"],
+    "additionalInfo": "Legal already cleared standard terms.",
     "options": [
-      { "label": "Redis PubSub", "summary": "Low latency push", "isRecommended": true },
+      { "label": "Redis PubSub", "summary": "Low latency push", "isRecommended": true, "confidence": 84, "caveats": ["Adds managed Redis cost"] },
       { "label": "Postgres LISTEN/NOTIFY", "summary": "Zero extra infra" }
     ],
     "criteria": [
@@ -98,6 +102,8 @@ curl -sS "https://bridge.xray.tech/api/v1/fleet/context?days=7&team=platform-eng
     ]
   }
   ```
+  - **Append caveats & AI metadata later:** `POST /api/v1/decide/escalate` with `{ "action": "ANNOTATE", "decisionId": "<id>", "confidence": 75, "confidenceReason": "...", "caveats": ["New risk"], "appendCaveats": true, "additionalInfo": "Extra context", "appendAdditionalInfo": true }`.
+- **`PATCH /api/v1/decide/<id>`** — Partially update AI `confidence`, `confidenceReason`, `caveats` (`appendCaveats: true`), `additionalInfo` (`appendAdditionalInfo: true`), or `optionAnnotations` on an existing decision without resending all options.
 - **`POST /api/v1/decide/guest-vote`** — Zero-login 1-Click Magic Link vote endpoint (`token`, `optionId` or `customOption: { label, summary }`, `score`, `rationale`). Auto-resolves the Decision (`status: "DECIDED"`) and unblocks waiting tasks when an `APPROVER` stakeholder votes.
 - **`POST /api/v1/decide/<id>/score`** — Score an option (`optionId`, `criterionId`, `score` 1-10) or resolve (`action: "resolve"`, `chosenOptionId`, `rationale`).
 

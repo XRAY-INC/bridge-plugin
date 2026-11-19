@@ -591,6 +591,49 @@ def test_status_bar_work_vs_local_transparency_and_segments(tmp_path: Path) -> N
     assert "│ LOCAL │ Personal_Game_Prototype:" in hook_res["injectSteps"][0]["ephemeralMessage"]
 
 
+def test_status_bar_disable_silences_text_and_hook_outputs(tmp_path: Path) -> None:
+    """Verify `brg status-bar --disable` silences `--text` and `--hook` outputs while `--force` and `--enable` work cleanly."""
+    creds_path = tmp_path / "creds.json"
+    env = {
+        "BRIDGE_CREDENTIALS_PATH": str(creds_path),
+        "ANTIGRAVITY_AGENT": "1",
+        "GEMINI_MODEL": "gemini-4-argon-high",
+    }
+    personal_dir = tmp_path / "Personal_Game_Prototype"
+    _init_git_repo(personal_dir)
+
+    out_disable = NonTTYBuffer()
+    assert run_cli(["status-bar", "--disable", "--json"], cwd=personal_dir, env=env, stdout_stream=out_disable) == EXIT_OK
+    disable_res = json.loads(out_disable.getvalue())
+    assert disable_res["enabled"] is False
+    assert disable_res["statusBar"] == ""
+
+    out_text_disabled = NonTTYBuffer()
+    assert run_cli(["status-bar", "--text"], cwd=personal_dir, env=env, stdout_stream=out_text_disabled) == EXIT_OK
+    assert out_text_disabled.getvalue() == ""
+
+    hook_stdin = io.StringIO(json.dumps({"workspacePaths": [str(personal_dir)]}))
+    out_hook_disabled = NonTTYBuffer()
+    assert run_cli(["status-bar", "--hook"], cwd=tmp_path, env=env, stdin_stream=hook_stdin, stdout_stream=out_hook_disabled) == EXIT_OK
+    assert json.loads(out_hook_disabled.getvalue()) == {"injectSteps": []}
+
+    out_force = NonTTYBuffer()
+    assert run_cli(["status-bar", "--text", "--force"], cwd=personal_dir, env=env, stdout_stream=out_force) == EXIT_OK
+    assert "[BRIDGE │" in out_force.getvalue()
+
+    out_enable = NonTTYBuffer()
+    assert run_cli(["status-bar", "--enable", "--json"], cwd=personal_dir, env=env, stdout_stream=out_enable) == EXIT_OK
+    enable_res = json.loads(out_enable.getvalue())
+    assert enable_res["enabled"] is True
+
+    out_text_enabled = NonTTYBuffer()
+    assert run_cli(["status-bar", "--text"], cwd=personal_dir, env=env, stdout_stream=out_text_enabled) == EXIT_OK
+    enabled_line = out_text_enabled.getvalue()
+    assert "[BRIDGE │" in enabled_line
+    assert "Default-on Bridge Status Bar" not in enabled_line
+    assert "include this line" not in enabled_line
+
+
 def test_local_unbound_repo_never_leaks_to_bridge_cli_or_mcp(tmp_path: Path) -> None:
     """Verify an unbound LOCAL directory NEVER sends network requests or offline spools to Bridge
     even when global ~/.config/bridge/credentials.json and BRIDGE_API_KEY hold valid work credentials.

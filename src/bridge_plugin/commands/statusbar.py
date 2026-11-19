@@ -627,7 +627,7 @@ def handle_status_bar(
             explicit_model=model_arg,
             force=True,
         )
-        payload = {**saved, "rendered": rendered, "statusBar": rendered["line"]}
+        payload = {**saved, "rendered": rendered, "statusBar": rendered["line"] if saved["enabled"] else ""}
         state_word = "ENABLED" if saved["enabled"] else "DISABLED"
         human_lines = [f"Bridge Status Bar {state_word} ({saved['path']})"]
         if saved["enabled"]:
@@ -652,7 +652,7 @@ def handle_status_bar(
     if force_json and not getattr(args, "text", False):
         target_out.write(json.dumps(rendered, indent=2, sort_keys=True) + "\n")
     else:
-        line_out = rendered["statusBar"] if rendered.get("statusBar") else rendered["line"]
+        line_out = str(rendered.get("statusBar") or "")
         if line_out:
             target_out.write(f"{line_out}\n")
     target_out.flush()
